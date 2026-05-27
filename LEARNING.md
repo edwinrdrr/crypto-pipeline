@@ -37,8 +37,10 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   - [x] dev dataset env-driven via `DBT_DATASET`; CI builds each PR into `dbt_ci_pr_<n>` and **drops it**
   - [x] `crypto_analytics_staging` dataset (Terraform) + CI hop **dev(ephemeral) → staging → prod**
         (prod job `needs: staging`); verified ephemeral build+drop and staging→prod promotion
-- [ ] **3. Slim CI** — `state:modified+` so CI only rebuilds changed models (cheap/fast)
-  - [ ] store prod manifest as CI artifact for `--defer` / `state:` comparison
+- [x] **3. Slim CI** — only rebuild changed models ✅ DONE (PR #8)
+  - [x] prod job publishes `manifest.json` to GCS; PR job builds `state:modified.body+ --defer`
+  - [x] verified: changing only the mart built 1 model (deferred the unchanged view), not a full rebuild
+  - [x] used `.body` (not plain `modified`) to avoid cross-env relation false-positives
 - [ ] **4. Orchestration** — local Airflow DAG (free) running ingestion + dbt
   - [ ] docker-compose Airflow
   - [ ] DAG: ingest → dbt build → dbt test
@@ -93,4 +95,11 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   `needs: staging`). Verified: PR #5 built+dropped `dbt_ci_pr_5`; merge built staging then prod.
 - 2026-05-28: Added **reproducibility scripts** (`scripts/install-tools.sh`, `bootstrap.sh`,
   `teardown.sh`) — idempotent, all gotcha-fixes baked in, so a future rebuild is auth + one script.
-  **Next: step 3 (Slim CI — `state:modified+`).**
+- 2026-05-28: **Completed step 3 (Slim CI)** via **PR #8**. Prod publishes `manifest.json` to GCS;
+  PRs build `state:modified.body+ --defer`. Demo PR built only the changed mart (1 model) and
+  deferred the unchanged view. First tried plain `state:modified+` → rebuilt everything (cross-env
+  relation false-positive → switched to `.body`).
+- 2026-05-28: **PR #9** fixed incremental schema evolution (`on_schema_change='append_new_columns'`)
+  so new columns reach the prod table; verified `price_direction` landed. Hit two parse bugs en route
+  (SQL `--` and a stray `#}` inside the config-block comment) — both caught before merge.
+  **Next: step 4 (local Airflow orchestration).**
