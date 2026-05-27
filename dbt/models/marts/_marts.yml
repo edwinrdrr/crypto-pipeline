@@ -24,3 +24,18 @@ models:
           combination_of_columns:
             - coin
             - ingested_at
+
+  - name: mart_latest_prices
+    description: "Latest snapshot per coin — for dashboard scorecards/tables (one row per coin)."
+    columns:
+      - name: coin
+        description: "CoinGecko coin id; exactly one row per coin here."
+        tests:
+          - not_null
+          - unique
+      - name: price_usd
+        description: "Most recent spot price in USD."
+        tests:
+          - not_null
+      - name: last_updated
+        description: "ingested_at of the latest snapshot for this coin."
