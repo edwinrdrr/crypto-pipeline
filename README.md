@@ -412,6 +412,7 @@ crypto-pipeline/
     walkthrough-one-change.md  # real recorded run: one change traced dev→staging→prod
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
     howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
+    faq.md                     # every question we worked through, answered crisply
 ```
 
 ## Companion docs
@@ -425,6 +426,8 @@ crypto-pipeline/
   through dev → staging → prod, annotating at each step where it ran vs which database it touched.
 - **`docs/howto-playbook.md`** — the operator's playbook: *how to actually use it* day-to-day
   (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
+- **`docs/faq.md`** — every question from building this project, answered crisply: environments,
+  push/CI-CD, config vs secrets / `.env`, cost, architecture, orchestration.
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
   recipe, cost rules, and gotchas. Read this when you sit back down to work.
 - **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning

@@ -151,6 +151,17 @@ So the best practice is: **config from the environment, secrets from a secret ma
 gitignored **`.env` locally** (see `.env.example`) and **platform injection in CI/cloud**. Use both,
 each in its place. Copy `.env.example` → `.env`, then `set -a && source .env && set +a`.
 
+**"From my laptop, which environment should I touch?"**
+**dev only** — ideally your own dev schema (`DBT_DATASET=dbt_$USER`). Writing to staging/prod is
+**CI/CD's job**; doing it by hand from a laptop skips the PR/review/test gate (that's how prod
+accidents happen). *Reading* prod (a query to verify, or Slim CI deferral) is fine — *writing*
+prod from local is not. Your `.env` defaults to `DBT_TARGET=dev`, so dev is the safe default.
+
+---
+
+> 💬 **More answers:** every question from building this project is collected in
+> **`faq.md`** (environments, push/CI-CD, config/`.env`, cost, architecture, orchestration).
+
 ---
 
 ## Say it back in one breath
