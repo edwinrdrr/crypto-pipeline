@@ -16,6 +16,8 @@ models:
         description: "When our pipeline pulled this snapshot (partition key)."
         tests:
           - not_null
+      - name: price_change_pct_since_prev
+        description: "Percent change in price vs the previous snapshot for this coin."
     # No duplicate coin+timestamp rows should exist after the merge.
     tests:
       - dbt_utils.unique_combination_of_columns:
