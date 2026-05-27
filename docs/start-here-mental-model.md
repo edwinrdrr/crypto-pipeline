@@ -136,6 +136,21 @@ table above. dev = safe scratchpad; staging = dress rehearsal; prod = the real, 
 Writing code and testing fast against dev *before* you push — so CI catches fewer problems and
 you don't waste round-trips. (See `docs/howto-playbook.md` recipe 2.)
 
+**"Don't you just put `environment=dev` in a `.env` file to do dev?"**
+Almost — good instinct, with three refinements:
+1. An env var **does** select the environment — in this project it's literally `DBT_TARGET=dev`
+   (+ `DBT_DATASET`, `RAW_DATASET`). So the "a variable picks the env" idea is correct.
+2. But the var doesn't *create* dev — it **points your run at** the dev database, which already
+   exists in the cloud. ("Which door to open," not "build a room.")
+3. A `.env` is a **local-laptop convenience** for setting those vars. **CI/cloud don't read a
+   `.env`** — they inject the *same* vars via the workflow `env:` (per branch: PR→dev, merge→
+   staging→prod) and `--set-env-vars`. And **secrets never go in a committed `.env`** — those
+   live in GitHub Secrets / a secret manager.
+
+So the best practice is: **config from the environment, secrets from a secret manager** — with a
+gitignored **`.env` locally** (see `.env.example`) and **platform injection in CI/cloud**. Use both,
+each in its place. Copy `.env.example` → `.env`, then `set -a && source .env && set +a`.
+
 ---
 
 ## Say it back in one breath
