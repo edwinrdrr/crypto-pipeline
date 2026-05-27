@@ -64,8 +64,11 @@ jobs:
       - name: dbt build (Slim CI — only changed models)
         run: |
           if [ -f "$GITHUB_WORKSPACE/prod-state/manifest.json" ]; then
-            echo "::notice::Slim CI — building state:modified+ (unchanged models deferred to prod)"
-            dbt build --select state:modified+ --defer --state "$GITHUB_WORKSPACE/prod-state" --target dev
+            echo "::notice::Slim CI — building state:modified.body+ (unchanged models deferred to prod)"
+            # .body compares the SQL only. Plain state:modified also compares the target
+            # relation (schema), which differs here (prod crypto_analytics vs ephemeral
+            # dbt_ci_pr_<n>) and would flag EVERY model as modified — defeating Slim CI.
+            dbt build --select state:modified.body+ --defer --state "$GITHUB_WORKSPACE/prod-state" --target dev
           else
             echo "::notice::No prior manifest — full build (first run)"
             dbt build --target dev
