@@ -404,6 +404,7 @@ crypto-pipeline/
     teardown.sh          #   delete the project to rebuild clean
   docs/
     start-here-mental-model.md # read first: environments=cloud DBs, what push/CI-CD really do
+    walkthrough-one-change.md  # real recorded run: one change traced dev→staging→prod
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
     howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
 ```
@@ -415,6 +416,8 @@ crypto-pipeline/
   CI/CD actually do (branch→dev, merge→staging→prod). Grounded in a real trace from this repo.
 - **`docs/environments-and-cicd.md`** — the concept guide: *why* environments, CI/CD, cloud,
   and orchestration work the way they do, grounded in this project.
+- **`docs/walkthrough-one-change.md`** — a *real recorded run* (PR #16) tracing one tiny change
+  through dev → staging → prod, annotating at each step where it ran vs which database it touched.
 - **`docs/howto-playbook.md`** — the operator's playbook: *how to actually use it* day-to-day
   (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
