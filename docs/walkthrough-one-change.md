@@ -98,4 +98,20 @@ Read the right column: **every environment is a cloud database** — none is "on
 > The same code (one comment) flowed dev → staging → prod untouched; each environment rebuilt
 > its own copy of the table. That's "promote the logic, not the data."
 
+---
+
+## The flow is the same for *any* change
+
+The change above was a one-line comment, on purpose — so the **path** is what you notice. But
+the path doesn't depend on *what* you changed:
+
+- **PR #16** (this trace) — a one-line comment.
+- **PR #21** — a whole **new model** (`mart_latest_prices`) added from scratch.
+
+Both took the **identical** route: laptop→dev → PR (Slim CI, ephemeral schema) → merge →
+staging → prod. Only the *content* differs; the *pipeline* is the same. (PR #21 even showed
+Slim CI picking up a brand-new model and it appearing in prod — same machinery, bigger change.)
+
+> **To author a new model** (the *what*, not the *flow*), see `docs/howto-playbook.md` recipe 3.
+
 Next: `docs/howto-playbook.md` to *do* these tasks yourself.
