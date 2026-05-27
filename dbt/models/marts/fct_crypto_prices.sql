@@ -47,6 +47,12 @@ with_change as (
                 lag(price_usd) over (partition by coin order by ingested_at)
             ) * 100, 4
         ) as price_change_pct_since_prev,
+        -- simple direction flag vs the previous snapshot (demoes Slim CI)
+        case
+            when price_usd > lag(price_usd) over (partition by coin order by ingested_at) then 'up'
+            when price_usd < lag(price_usd) over (partition by coin order by ingested_at) then 'down'
+            else 'flat'
+        end as price_direction,
         date(ingested_at) as ingest_date
     from prices
 )
