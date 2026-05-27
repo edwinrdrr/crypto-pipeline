@@ -394,7 +394,7 @@ crypto-pipeline/
     macros/              #   generate_schema_name.sql (clean per-env / per-PR schemas)
     models/
       staging/           #   _crypto__sources.yml, stg_crypto__prices.sql
-      marts/             #   fct_crypto_prices.sql (incremental), _marts.yml
+      marts/             #   fct_crypto_prices.sql (incremental), mart_latest_prices.sql, _marts.yml
   terraform/             # Infrastructure as Code: bucket + 5 datasets
     main.tf  variables.tf  outputs.tf  terraform.tfvars.example
   .github/workflows/
@@ -428,6 +428,8 @@ crypto-pipeline/
   (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
 - **`docs/faq.md`** — every question from building this project, answered crisply: environments,
   push/CI-CD, config vs secrets / `.env`, cost, architecture, orchestration.
+- **`docs/dashboard.md`** — put a free Looker Studio dashboard on top (incl. making it public for
+  a portfolio) + free alerting options (GitHub failure emails, dbt freshness, Cloud Monitoring).
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
   recipe, cost rules, and gotchas. Read this when you sit back down to work.
 - **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning
