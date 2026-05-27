@@ -10,6 +10,25 @@ BQ_DATASET="${BQ_DATASET:-crypto_raw}"        # prod dataset by default
 FUNCTION_NAME="crypto-ingest"
 SCHEDULER_JOB="crypto-ingest-5min"
 
+# --- Dedicated RUNTIME service account for the function -----------------------
+# IMPORTANT: do NOT rely on the default compute SA — on new projects it has no
+# permissions, so the function would deploy fine but fail at runtime. Give the
+# function its own least-privilege identity instead.
+RUNTIME_SA_NAME="crypto-ingest-fn"
+RUNTIME_SA="$RUNTIME_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
+if ! gcloud iam service-accounts describe "$RUNTIME_SA" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  echo "==> Creating runtime service account ..."
+  gcloud iam service-accounts create "$RUNTIME_SA_NAME" \
+    --display-name="Crypto ingest function runtime" --project="$PROJECT_ID"
+fi
+echo "==> Granting runtime SA BigQuery + Storage roles ..."
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$RUNTIME_SA" --role="roles/bigquery.dataEditor" --condition=None >/dev/null
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$RUNTIME_SA" --role="roles/bigquery.jobUser" --condition=None >/dev/null
+gcloud storage buckets add-iam-policy-binding "gs://$RAW_BUCKET" \
+  --member="serviceAccount:$RUNTIME_SA" --role="roles/storage.objectAdmin" >/dev/null
+
 echo "==> Deploying Cloud Function '$FUNCTION_NAME' ..."
 gcloud functions deploy "$FUNCTION_NAME" \
   --gen2 \
@@ -21,6 +40,7 @@ gcloud functions deploy "$FUNCTION_NAME" \
   --no-allow-unauthenticated \
   --memory=256Mi \
   --timeout=120s \
+  --run-service-account="$RUNTIME_SA" \
   --set-env-vars="GCP_PROJECT=$PROJECT_ID,RAW_BUCKET=$RAW_BUCKET,BQ_DATASET=$BQ_DATASET" \
   --project="$PROJECT_ID"
 
