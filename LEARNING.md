@@ -3,6 +3,8 @@
 Tracking my journey learning **environments (stages) + CI/CD + cloud** for data
 engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery → dbt on GCP).
 
+> 📖 Full concept guide: **`docs/environments-and-cicd.md`** (the "why it works" deep-dive).
+
 ## Core concepts (the "why")
 
 - **Stages/environments** = isolated code + isolated data per tier (dev / staging / prod).

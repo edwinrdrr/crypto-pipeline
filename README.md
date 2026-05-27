@@ -402,10 +402,14 @@ crypto-pipeline/
     install-tools.sh     #   gcloud + terraform + dbt venv + gh (pinned versions)
     bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
     teardown.sh          #   delete the project to rebuild clean
+  docs/
+    environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
 ```
 
 ## Companion docs
 
+- **`docs/environments-and-cicd.md`** — the concept guide: *why* environments, CI/CD, cloud,
+  and orchestration work the way they do, grounded in this project. Start here to learn the ideas.
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
   recipe, cost rules, and gotchas. Read this when you sit back down to work.
 - **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning
