@@ -458,7 +458,8 @@ The true chronological sequence of this session — not an idealized order:
     the **default compute SA**, which on a new project has **no permissions** (and failed silently).
     Fix: created a dedicated **`crypto-ingest-fn`** runtime SA (BigQuery + bucket Storage roles),
     pointed the function at it, force-ran the scheduler, and **verified a new snapshot landed**.
-    Updated `deploy.sh` so this is automatic next time.
+    Updated `deploy.sh` so this is automatic next time. (Steps 18–19 shipped as **PR #3**, which
+    also completed the "document every setup step" gap-fill across the README.)
 20. **Added a cost projection** (PR #4) — ~$0–0.50/yr running 24/7; measured row size against the
     real table; documented the multi-region GCS free-ops caveat.
 21. **Step 2: environment isolation** (PR #5) — added the `generate_schema_name` macro + env-driven
@@ -466,17 +467,20 @@ The true chronological sequence of this session — not an idealized order:
     Verified: PR #5 built into `dbt_ci_pr_5` then **dropped** it; the merge built **staging** then
     promoted to **prod** (the `prod` job `needs: staging`). 💡 Lesson: per-PR schemas isolate
     concurrent work; a staging gate catches bad data before prod.
-22. **Step 3: Slim CI** (PR #8) — prod publishes its `manifest.json` to GCS; PRs build
+22. **Reproducibility scripts** (PR #7) — added `scripts/install-tools.sh`, `bootstrap.sh`
+    (idempotent, all 8 phases with the gotcha-fixes baked in), and `teardown.sh`, so a future
+    rebuild is auth + one command. Validated idempotency-detection against the live project.
+23. **Step 3: Slim CI** (PR #8) — prod publishes its `manifest.json` to GCS; PRs build
     `state:modified.body+ --defer`. Demonstrated: changing only the mart built **just
     `fct_crypto_prices`** (1 model, 5 tasks) and deferred the unchanged staging view —
     vs. a full build (2 models, 8 tasks). 💡 First tried plain `state:modified+` and it
     rebuilt everything (the cross-env relation false-positive — see gotchas).
-23. **Fixed incremental schema evolution** (PR #9) — `price_direction` didn't reach prod
+24. **Fixed incremental schema evolution** (PR #9) — `price_direction` didn't reach prod
     because the incremental mart defaulted to `on_schema_change='ignore'`. Set it to
     `append_new_columns`; hit two more parse bugs along the way (SQL `--` and a stray `#}`
     inside the config-block comment — both caught by CI/local compile), then verified the
     column landed in prod.
-24. **Step 4: orchestration** — stood up **local Airflow** (docker-compose, LocalExecutor) and a
+25. **Step 4: orchestration** — stood up **local Airflow** (docker-compose, LocalExecutor) and a
     DAG `extract_load → dbt_run → dbt_test`. Verified: the `@hourly` run succeeded on its own, and a
     manual run's `dbt_run` hit a BigQuery concurrency conflict (two runs, same dev table) and
     **auto-retried to success** — orchestration earning its keep. Added a free **GitHub Actions cron**
