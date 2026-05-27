@@ -404,12 +404,15 @@ crypto-pipeline/
     teardown.sh          #   delete the project to rebuild clean
   docs/
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
+    howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
 ```
 
 ## Companion docs
 
 - **`docs/environments-and-cicd.md`** — the concept guide: *why* environments, CI/CD, cloud,
   and orchestration work the way they do, grounded in this project. Start here to learn the ideas.
+- **`docs/howto-playbook.md`** — the operator's playbook: *how to actually use it* day-to-day
+  (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
   recipe, cost rules, and gotchas. Read this when you sit back down to work.
 - **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning
