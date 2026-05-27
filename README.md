@@ -128,10 +128,11 @@ gcloud billing budgets create \
 cd ../terraform
 cp terraform.tfvars.example terraform.tfvars   # edit: set your project_id
 terraform init
-terraform apply        # creates the bucket + 4 datasets (raw/analytics × dev/prod)
+terraform apply        # creates the bucket + 5 datasets
 ```
 This provisions all your **environments** reproducibly:
-`crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics`.
+`crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics`.
+(Per-PR `dbt_ci_pr_<n>` schemas are created/dropped by CI on the fly — not managed here.)
 
 > Prefer manual setup to learn the primitives first? The equivalent commands are:
 > ```bash
@@ -139,6 +140,7 @@ This provisions all your **environments** reproducibly:
 > bq --location=US mk --dataset $PROJECT_ID:crypto_raw_dev
 > bq --location=US mk --dataset $PROJECT_ID:crypto_raw
 > bq --location=US mk --dataset $PROJECT_ID:crypto_analytics_dev
+> bq --location=US mk --dataset $PROJECT_ID:crypto_analytics_staging
 > bq --location=US mk --dataset $PROJECT_ID:crypto_analytics
 > ```
 
@@ -208,11 +210,28 @@ gcloud scheduler jobs pause  crypto-ingest-5min --location=us-central1
 gcloud scheduler jobs resume crypto-ingest-5min --location=us-central1
 ```
 
-## CI/CD (GitHub Actions)
+## CI/CD (GitHub Actions) — environment-isolated
 
-`.github/workflows/dbt-ci.yml` runs automatically:
-- **Pull request** → `dbt build` + tests against **dev**
-- **Merge to main** → `dbt build` + tests against **prod**
+`.github/workflows/dbt-ci.yml` runs automatically with **per-PR isolation + staged promotion**:
+
+```
+Pull request ─► pr-ephemeral : build into a throwaway schema dbt_ci_pr_<PR#>,
+                               run tests, then DROP it (if: always)
+Merge to main ─► staging : build + test crypto_analytics_staging
+                  │
+                  └─► prod : (needs: staging) promote → crypto_analytics
+```
+
+- **Per-PR ephemeral schema** — each PR builds into its own `dbt_ci_pr_<n>` dataset (set via
+  `DBT_DATASET`), so two open PRs never overwrite each other, and shared dev stays clean. The
+  schema is dropped at the end (even on failure).
+- **Staged promotion** — merging deploys to **staging** first; **prod** only runs if staging is
+  green (`needs: staging`). That's the dev → staging → prod gate.
+- The `generate_schema_name` macro (`dbt/macros/`) makes dbt use each env's dataset name as-is.
+
+> **Want a manual approval before prod?** Add a GitHub **Environment** (`environment: production`)
+> with required reviewers on the `prod` job. Note: environment protection rules need a public repo
+> or a paid plan for private repos — otherwise the `needs: staging` gate is your automated stand-in.
 
 Create a CI service account, generate a key, and load the two repo secrets (via the
 `gh` CLI — no clicking needed):
@@ -269,15 +288,17 @@ Branch = sandbox · `main` = source of truth · merging = promotion to prod.
 Full pipeline scaffold + git/CI-CD loop:
 
 - [x] **Ingestion** — CoinGecko → GCS → BigQuery (`ingestion/main.py`) — *run manually; works*
-- [x] **dbt** — incremental + partitioned models, dev/prod targets (`dbt/`) — *builds + tests pass*
-- [x] **GitHub Actions** — dbt CI/CD (`.github/workflows/dbt-ci.yml`) — *green; PR→dev, merge→prod*
-- [x] **Terraform** — bucket + 4 datasets as IaC (`terraform/`) — *applied*
+- [x] **dbt** — incremental + partitioned models; dev/staging/prod targets (`dbt/`) — *builds + tests pass*
+- [x] **GitHub Actions** — dbt CI/CD (`.github/workflows/dbt-ci.yml`) — *PR→ephemeral, merge→staging→prod*
+- [x] **Terraform** — bucket + 5 datasets as IaC (`terraform/`) — *applied*
 - [x] **Git repo + PR flow** — branch → PR → CI → merge (repo: `edwinrdrr/crypto-pipeline`)
 - [x] **CI green + first prod merge** — PR #1 merged; new column verified live in `crypto_analytics` ✅
 - [x] **Docs PR** — PR #2 merged (journey log + committed lockfiles)
 - [x] **Cloud Function + Cloud Scheduler** — deployed & verified; runs every 5 min as a
       dedicated runtime SA, writing to `crypto_raw`. ✅
-- [ ] **Step 2: environment isolation** — `staging` tier + per-PR ephemeral schemas (next)
+- [x] **Step 2: environment isolation** — per-PR ephemeral `dbt_ci_pr_<n>` schemas + `staging` tier;
+      dev→staging→prod promotion (PR #5). ✅
+- [ ] **Step 3: Slim CI** — `state:modified+` so CI only rebuilds changed models (next)
 
 ## Project layout
 ```
@@ -288,15 +309,16 @@ crypto-pipeline/
     deploy.sh            #   deploy Cloud Function + 5-min Scheduler
   dbt/                   # Transform: staging views + incremental marts
     dbt_project.yml
-    profiles.yml         #   dev/prod targets, env-driven auth
+    profiles.yml         #   dev/staging/prod targets, env-driven auth + dataset
     packages.yml
+    macros/              #   generate_schema_name.sql (clean per-env / per-PR schemas)
     models/
       staging/           #   _crypto__sources.yml, stg_crypto__prices.sql
       marts/             #   fct_crypto_prices.sql (incremental), _marts.yml
-  terraform/             # Infrastructure as Code: bucket + 4 datasets
+  terraform/             # Infrastructure as Code: bucket + 5 datasets
     main.tf  variables.tf  outputs.tf  terraform.tfvars.example
   .github/workflows/
-    dbt-ci.yml           # CI/CD: dbt on PR (dev) and merge (prod)
+    dbt-ci.yml           # CI/CD: PR→ephemeral schema, merge→staging→prod
 ```
 
 ## Companion docs
@@ -354,6 +376,13 @@ The true chronological sequence of this session — not an idealized order:
     Fix: created a dedicated **`crypto-ingest-fn`** runtime SA (BigQuery + bucket Storage roles),
     pointed the function at it, force-ran the scheduler, and **verified a new snapshot landed**.
     Updated `deploy.sh` so this is automatic next time.
+20. **Added a cost projection** (PR #4) — ~$0–0.50/yr running 24/7; measured row size against the
+    real table; documented the multi-region GCS free-ops caveat.
+21. **Step 2: environment isolation** (PR #5) — added the `generate_schema_name` macro + env-driven
+    `DBT_DATASET`, a `crypto_analytics_staging` dataset, and a **dev(ephemeral)→staging→prod** CI/CD.
+    Verified: PR #5 built into `dbt_ci_pr_5` then **dropped** it; the merge built **staging** then
+    promoted to **prod** (the `prod` job `needs: staging`). 💡 Lesson: per-PR schemas isolate
+    concurrent work; a staging gate catches bad data before prod.
 
 ### Gotchas we hit (so future-you doesn't lose time)
 
@@ -376,7 +405,7 @@ The true chronological sequence of this session — not an idealized order:
 | GCP project | `crypto-pipeline-260527-18241` |
 | GitHub repo | `edwinrdrr/crypto-pipeline` (private) |
 | Bucket | `crypto-pipeline-260527-18241-crypto-raw` |
-| Datasets | `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics` |
+| Datasets | `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics` (+ ephemeral `dbt_ci_pr_<n>`) |
 | CI service account | `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
 | Function runtime SA | `crypto-ingest-fn@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
 | Scheduler SA | `crypto-scheduler@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
