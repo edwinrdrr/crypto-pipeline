@@ -91,4 +91,6 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   macro + env-driven `DBT_DATASET`; CI now builds each PR into an ephemeral `dbt_ci_pr_<n>` schema
   and drops it; added `crypto_analytics_staging` + a **dev→staging→prod** CI/CD promotion (prod
   `needs: staging`). Verified: PR #5 built+dropped `dbt_ci_pr_5`; merge built staging then prod.
+- 2026-05-28: Added **reproducibility scripts** (`scripts/install-tools.sh`, `bootstrap.sh`,
+  `teardown.sh`) — idempotent, all gotcha-fixes baked in, so a future rebuild is auth + one script.
   **Next: step 3 (Slim CI — `state:modified+`).**

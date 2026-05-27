@@ -48,6 +48,40 @@ frequency) and the **30-day GCS lifecycle rule** (Terraform) so raw files never 
 > - Want literal $0? Batch several coins into fewer files, or drop to every 15 min. Not worth it
 >   for ~$0.30/yr. The $5 budget alert (§1b) will catch anything unexpected regardless.
 
+## Reproduce from scratch (the fast path)
+
+Three scripts in `scripts/` make a full rebuild near-one-command. The detailed manual
+steps below (§0–§2) are what these scripts automate — read them to understand, run the
+scripts to go fast.
+
+```bash
+# 1. Install pinned tools (gcloud, terraform 1.9.8, dbt venv, gh check) — once per machine
+./scripts/install-tools.sh
+export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
+
+# 2. Authenticate (interactive — only you can do these)
+gcloud auth login && gcloud auth application-default login
+gh auth login
+
+# 3. Build EVERYTHING on a fresh project (idempotent; safe to re-run)
+PROJECT_ID="crypto-pipeline-$(date +%y%m%d)-$RANDOM" \
+BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX \
+./scripts/bootstrap.sh
+```
+`bootstrap.sh` runs all 8 phases in order: project + billing + APIs → budget → Terraform
+(bucket + 5 datasets) → seed raw tables → GitHub repo → CI service account + secrets →
+deploy Cloud Function + Scheduler → verify rows landed. Every gotcha-fix is baked in.
+
+Tear down to rebuild clean: `PROJECT_ID=... ./scripts/teardown.sh`.
+
+> **What "reproducible" means here (honest scope):**
+> - ✅ **Identical** infrastructure, datasets, pipeline logic, CI/CD, and final wiring.
+> - 🔁 The **project id** differs each run (must be globally unique — it's parameterized).
+> - 📈 The **data values** differ — it's the live CoinGecko market, so prices/timestamps won't
+>   match a previous run. The schema and behaviour are identical; the numbers are fresh.
+> - ⚠️ Tool versions are pinned, but **GCP pricing / free-tier terms can change** over time.
+> - The scripts are syntax- and idempotency-validated; a full end-to-end run needs a fresh project.
+
 ## One-time setup
 
 ### 0. Install tools
@@ -319,6 +353,10 @@ crypto-pipeline/
     main.tf  variables.tf  outputs.tf  terraform.tfvars.example
   .github/workflows/
     dbt-ci.yml           # CI/CD: PR→ephemeral schema, merge→staging→prod
+  scripts/               # Reproducibility
+    install-tools.sh     #   gcloud + terraform + dbt venv + gh (pinned versions)
+    bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
+    teardown.sh          #   delete the project to rebuild clean
 ```
 
 ## Companion docs
