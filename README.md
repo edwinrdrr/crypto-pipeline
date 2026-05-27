@@ -20,6 +20,34 @@ Goal: learn **environments (dev/prod), CI/CD, and cloud** end-to-end at **~$0/mo
 
 Expected cost for this project: **$0** (well within Always Free + the $300 credit).
 
+### Cost projection — running the 5-min pipeline 24/7 for a full year
+
+**Bottom line: ~$0–$0.50/year.** At 105,120 runs/year, everything stays inside the
+Always Free tier; the only thing that can register at all is GCS write operations.
+
+| Component | Yearly usage | Free tier | Cost |
+|-----------|--------------|-----------|------|
+| Cloud Scheduler | 1 job | 3 jobs free, forever | $0 |
+| Cloud Function (invocations) | 105,120/yr | 2M/month free | $0 |
+| Cloud Function (compute) | ~4k vCPU-sec + 6k GiB-sec/mo | 180k vCPU-sec + 360k GiB-sec/mo | $0 |
+| BigQuery load jobs | 105,120 loads/yr | batch loads always free | $0 |
+| BigQuery storage | ~24 MB/yr (measured: 57 B/row) | 10 GB free | $0 |
+| BigQuery queries | none recurring (dbt runs only in CI) | 1 TB/mo free | $0 |
+| Cloud Storage (storage) | ~9 MB (30-day auto-delete) | tiny | ~$0 |
+| Cloud Storage (write ops) | ~8,640 Class-A/mo | 5,000/mo free* | ~$0–0.04/mo |
+
+Two things keep it this cheap (both already built in): **batch loads** (free regardless of
+frequency) and the **30-day GCS lifecycle rule** (Terraform) so raw files never accumulate.
+
+> **Accuracy / caveats (be honest with future-you):**
+> - Based on GCP pricing knowledge (≈Jan 2026), **not** verified against live pricing pages or
+>   the actual billing console. The BigQuery storage input *was* measured against the real table.
+> - \* The always-free GCS operations allowance (5,000 Class-A/mo) is **region-specific**
+>   (us-east1/west1/central1). Our bucket is **multi-region `US`**, which may not qualify — in
+>   that case all ~8,640 writes/mo are billable → **~$0.50/year** (the realistic ceiling).
+> - Want literal $0? Batch several coins into fewer files, or drop to every 15 min. Not worth it
+>   for ~$0.30/yr. The $5 budget alert (§1b) will catch anything unexpected regardless.
+
 ## One-time setup
 
 ### 0. Install tools
