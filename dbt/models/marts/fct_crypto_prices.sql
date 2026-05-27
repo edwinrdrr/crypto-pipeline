@@ -40,6 +40,13 @@ with_change as (
         price_usd - lag(price_usd) over (
             partition by coin order by ingested_at
         ) as price_change_since_prev,
+        -- % change vs the previous snapshot (safe-divide avoids /0)
+        round(
+            safe_divide(
+                price_usd - lag(price_usd) over (partition by coin order by ingested_at),
+                lag(price_usd) over (partition by coin order by ingested_at)
+            ) * 100, 4
+        ) as price_change_pct_since_prev,
         date(ingested_at) as ingest_date
     from prices
 )
