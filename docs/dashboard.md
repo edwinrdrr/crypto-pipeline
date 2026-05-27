@@ -1,7 +1,7 @@
-# Dashboard & alerts (free)
+# Dashboard (free)
 
-How to put a **free, always-on dashboard** on top of this pipeline, and get **free alerts**
-when something breaks — no extra infrastructure.
+How to put a **free, always-on dashboard** on top of this pipeline — no extra infrastructure.
+(For getting notified when the pipeline *breaks*, see **`alerts.md`**.)
 
 ---
 
@@ -54,37 +54,9 @@ no GCP access**:
 
 ---
 
-## Free alerts & monitoring
-
-You want to know if **ingestion stops** or a **scheduled run fails**. Free options, easiest first:
-
-**1. GitHub Actions failure email — already on, zero setup.**
-GitHub emails you automatically when a scheduled workflow run fails. So if the 6-hourly
-`scheduled-dbt` job breaks (bad data, auth, etc.), you get a mail. (Check
-Settings → Notifications → Actions if you don't see them.)
-
-**2. dbt source freshness — detects "ingestion stopped".**
-Your sources already declare freshness (`warn_after: 15m`, `error_after: 60m` on
-`crypto_raw.prices`). Run it on a schedule and a stale raw table (i.e. the function stopped
-landing data) becomes a **failure → email** via option 1:
-```bash
-dbt source freshness --target prod      # add as a step in scheduled-dbt.yml to alert on stale data
-```
-
-**3. GCP Cloud Monitoring — alert on the function erroring.**
-Console → **Monitoring → Alerting → Create policy** → metric *Cloud Function → Execution count*
-(filter `status != ok`) or a log-based alert on errors → notification channel **Email** (free).
-Cloud Monitoring has a free allotment that easily covers one project.
-
-**4. Slack / Discord webhook — nicer alerts, still free.**
-Create an incoming webhook (free) and `curl` it from a workflow step or a tiny Cloud Function
-when a check fails — e.g. post "⚠️ crypto ingestion stale" to a channel.
-
-**Recommended minimum (all free, low effort):** rely on (1) GitHub failure emails, and add (2)
-`dbt source freshness` to the scheduled workflow so a stopped ingestion alerts you too.
-
----
-
 ## What we added for this
 - `dbt/models/marts/mart_latest_prices.sql` — the one-row-per-coin view the dashboard reads.
 - See `howto-playbook.md` to add more marts; `faq.md` for the cost/free-tier details.
+
+> **Want to be notified when the pipeline breaks?** That's a separate concern — see
+> **`alerts.md`** for free monitoring/notification options.
