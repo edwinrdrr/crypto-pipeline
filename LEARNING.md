@@ -25,12 +25,13 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 
 > All four are real-world — they're layers used *together*, learned in this order.
 
-- [ ] **1. Git + PR flow** ← the universal foundation (IN PROGRESS)
-  - [ ] init git repo, first commit
-  - [ ] create a feature branch
-  - [ ] make a change to a dbt model
-  - [ ] open a PR, watch CI run
-  - [ ] merge to main → prod deploy
+- [x] **1. Git + PR flow** ← the universal foundation ✅ DONE
+  - [x] init git repo, first commit, push to private GitHub repo (`edwinrdrr/crypto-pipeline`)
+  - [x] create a feature branch (`feature/add-price-change-pct`)
+  - [x] make a change to a dbt model (added `price_change_pct_since_prev`)
+  - [x] open PR #1, watch CI run — CI caught a real bug (`dbt-utils` pip error), then failed on missing secrets
+  - [x] provision GCP (project, budget, Terraform, CI service account + secrets)
+  - [x] CI green → merge to main → CD built prod → verified new column live in `crypto_analytics`
 - [ ] **2. Environment isolation** — add a `staging` tier + per-PR/per-dev schemas
   - [ ] `generate_schema_name` macro for per-PR dev schemas
   - [ ] add `analytics_staging` dataset + CI hop dev→staging→prod
@@ -56,6 +57,22 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 - NEVER enable Cloud Composer / Dataflow / large clusters.
 - $5 budget alert set in GCP Billing.
 
+## Live project facts
+
+- **GCP project:** `crypto-pipeline-260527-18241` (billing-linked, IDR account)
+- **GitHub repo:** `edwinrdrr/crypto-pipeline` (private)
+- **Bucket:** `crypto-pipeline-260527-18241-crypto-raw`
+- **Datasets:** `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics`
+- **CI service account:** `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com`
+- **Budget:** "crypto-pipeline-learn (~$5)" = 80,000 IDR, alerts 50/90/100%
+- **Tooling:** gcloud at `~/google-cloud-sdk/bin`, terraform at `~/bin/terraform` (v1.9.8),
+  dbt in `.venv` (v1.11.11). Note: stock `/usr/local/bin/terraform` v1.6.0 has a GPG bug — use `~/bin`.
+
 ## Log
 
-- 2026-05-27: Built full pipeline scaffold. Started step 1 (git + PR flow).
+- 2026-05-27: Built full pipeline scaffold.
+- 2026-05-27: **Completed step 1 (git + PR flow) end-to-end.** Code change → PR #1 → CI
+  (caught a real `dbt-utils` bug, then failed on missing secrets) → provisioned GCP
+  (fresh project, $5 budget, Terraform infra, CI service account + GitHub secrets) →
+  seeded raw tables → CI green → merged → CD built prod → verified `price_change_pct_since_prev`
+  live in `crypto_analytics.fct_crypto_prices`. **Next: step 2 (staging + per-PR schemas).**
