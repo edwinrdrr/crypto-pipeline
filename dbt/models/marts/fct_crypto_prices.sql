@@ -9,12 +9,16 @@
     },
     cluster_by = ['coin'],
     incremental_strategy = 'merge',
-    -- Add newly-introduced columns to the existing table on incremental runs.
-    -- Without this, dbt's default ('ignore') silently drops new columns until a
-    -- --full-refresh, so a new column never reaches an already-built prod table.
     on_schema_change = 'append_new_columns'
   )
 }}
+
+{#
+  on_schema_change='append_new_columns': add newly-introduced columns to the existing
+  table on incremental runs. dbt's default ('ignore') silently drops new columns until
+  a full refresh, so a new column never reaches an already-built prod table.
+  (Note: use Jinja comments {# #} here, not SQL --, inside/after the config block.)
+#}
 
 -- Time-series fact: every coin price snapshot, enriched with the change
 -- since the previous snapshot. Incremental = each run only reads NEW rows,
