@@ -413,6 +413,8 @@ crypto-pipeline/
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
     howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
     faq.md                     # every question we worked through, answered crisply
+    dashboard.md               # free Looker Studio dashboard (+ make it public)
+    alerts.md                  # free monitoring/notifications when the pipeline breaks
 ```
 
 ## Companion docs
@@ -428,8 +430,10 @@ crypto-pipeline/
   (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
 - **`docs/faq.md`** — every question from building this project, answered crisply: environments,
   push/CI-CD, config vs secrets / `.env`, cost, architecture, orchestration.
-- **`docs/dashboard.md`** — put a free Looker Studio dashboard on top (incl. making it public for
-  a portfolio) + free alerting options (GitHub failure emails, dbt freshness, Cloud Monitoring).
+- **`docs/dashboard.md`** — put a free Looker Studio dashboard on top, incl. making it public for
+  a portfolio.
+- **`docs/alerts.md`** — free monitoring/notifications when the pipeline breaks (GitHub failure
+  emails, dbt source freshness, Cloud Monitoring, Slack/Discord webhooks).
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
   recipe, cost rules, and gotchas. Read this when you sit back down to work.
 - **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning
