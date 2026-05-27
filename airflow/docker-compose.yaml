@@ -1,0 +1,77 @@
+# Minimal local Airflow (LocalExecutor + Postgres) — FREE, runs on your machine.
+# This is the cheap alternative to Cloud Composer (which costs ~$300+/mo).
+#
+#   cd airflow
+#   cp .env.example .env            # then put a GCP key at airflow/gcp-key.json
+#   docker compose up airflow-init  # one-time: init DB + create admin user
+#   docker compose up -d            # start webserver + scheduler
+#   open http://localhost:8080      # login: airflow / airflow
+#
+# The DAG (dags/crypto_pipeline_dag.py) runs: extract_load -> dbt_run -> dbt_test.
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    # dbt + ingestion deps installed into the Airflow image on startup
+    _PIP_ADDITIONAL_REQUIREMENTS: "dbt-bigquery==1.* requests google-cloud-storage google-cloud-bigquery"
+    # Passed through to the DAG's tasks:
+    GCP_PROJECT: ${GCP_PROJECT}
+    RAW_BUCKET: ${GCP_PROJECT}-crypto-raw
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/gcp-key.json
+    DBT_METHOD: service-account
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ../ingestion:/opt/airflow/project/ingestion:ro
+    - ../dbt:/opt/airflow/project/dbt
+    - ./gcp-key.json:/opt/airflow/gcp-key.json:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    # Use the image's DEFAULT entrypoint (it sets up a valid user for arbitrary UIDs)
+    # and let these built-in vars migrate the DB + create the admin user.
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: airflow
+      _AIRFLOW_WWW_USER_PASSWORD: airflow
+    command: version
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8088:8080"     # host 8088 (8080/8081/8083 are used by other local containers)
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+
+volumes:
+  postgres-db:

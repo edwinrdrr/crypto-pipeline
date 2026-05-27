@@ -1,0 +1,42 @@
+name: scheduled dbt (prod refresh)
+
+# Free, 24/7 orchestration of the dbt TRANSFORM on a schedule — the gap that
+# Cloud Scheduler (ingestion only) and local Airflow (dev-only) don't cover.
+#
+# Cost note (private repo = 2,000 free Action-minutes/month):
+#   every 6h = ~120 runs/mo x ~2 min = ~240 min/mo — comfortably free.
+#   Do NOT make this hourly on a private repo (~1,800 min/mo nearly blows the budget).
+#
+# Notes: scheduled workflows run only on the default branch, can be delayed under load,
+# and GitHub auto-disables them after 60 days of repo inactivity.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"      # every 6 hours
+  workflow_dispatch: {}         # also allow manual "Run workflow"
+
+env:
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
+  GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
+  DBT_METHOD: service-account
+  DBT_TARGET: prod
+  RAW_DATASET: crypto_raw
+
+jobs:
+  refresh-prod:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install dbt-bigquery==1.*
+      - name: Write service account key
+        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - run: dbt deps
+      - name: dbt build (prod) — keeps crypto_analytics fresh on a schedule
+        run: dbt build --target prod
