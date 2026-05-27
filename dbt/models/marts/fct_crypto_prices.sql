@@ -23,6 +23,7 @@
 -- Time-series fact: every coin price snapshot, enriched with the change
 -- since the previous snapshot. Incremental = each run only reads NEW rows,
 -- so it stays well inside BigQuery's free 1 TB/month.
+-- (walkthrough demo: this one-line comment is the "change" we trace dev -> staging -> prod)
 
 with prices as (
     select * from {{ ref('stg_crypto__prices') }}
