@@ -17,7 +17,7 @@
   on_schema_change='append_new_columns': add newly-introduced columns to the existing
   table on incremental runs. dbt's default ('ignore') silently drops new columns until
   a full refresh, so a new column never reaches an already-built prod table.
-  (Note: use Jinja comments {# #} here, not SQL --, inside/after the config block.)
+  Note: comments around a config block must be Jinja-style, not SQL dash-dash.
 #}
 
 -- Time-series fact: every coin price snapshot, enriched with the change
