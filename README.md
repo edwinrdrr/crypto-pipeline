@@ -403,14 +403,18 @@ crypto-pipeline/
     bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
     teardown.sh          #   delete the project to rebuild clean
   docs/
+    start-here-mental-model.md # read first: environments=cloud DBs, what push/CI-CD really do
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
     howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
 ```
 
 ## Companion docs
 
+- **`docs/start-here-mental-model.md`** — read this FIRST. Untangles the core confusion from
+  zero: environments are *cloud databases*, "local" is just your laptop, and what `git push` /
+  CI/CD actually do (branch→dev, merge→staging→prod). Grounded in a real trace from this repo.
 - **`docs/environments-and-cicd.md`** — the concept guide: *why* environments, CI/CD, cloud,
-  and orchestration work the way they do, grounded in this project. Start here to learn the ideas.
+  and orchestration work the way they do, grounded in this project.
 - **`docs/howto-playbook.md`** — the operator's playbook: *how to actually use it* day-to-day
   (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
 - **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
