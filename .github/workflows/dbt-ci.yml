@@ -40,7 +40,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dbt
-        run: pip install dbt-bigquery==1.* dbt-utils
+        # dbt-utils is a dbt package (installed by `dbt deps` from packages.yml),
+        # NOT a pip package — only dbt-bigquery comes from PyPI.
+        run: pip install dbt-bigquery==1.*
 
       - name: Write service account key
         run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
