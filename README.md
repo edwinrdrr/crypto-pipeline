@@ -178,15 +178,23 @@ This provisions all your **environments** reproducibly:
 > bq --location=US mk --dataset $PROJECT_ID:crypto_analytics
 > ```
 
+## Local config: one `.env` (do this once)
+
+All local commands read their env vars from a single gitignored `.env`. Set it up once,
+load it each shell — **no manual `export`s anywhere**:
+```bash
+cd ~/Documents/learning/crypto-pipeline
+source .venv/bin/activate
+cp .env.example .env               # first time; edit GCP_PROJECT if yours differs
+set -a && source .env && set +a    # load it (run from the repo root)
+```
+> `.env` only sets vars on your laptop and points local runs at **dev**. CI/cloud inject the
+> same vars themselves. Config only — secrets go in GitHub Secrets / a secret manager.
+
 ## Run the ingestion locally
 
 ```bash
-cd crypto-pipeline/ingestion
-source .venv/bin/activate
-export GCP_PROJECT=$PROJECT_ID
-export RAW_BUCKET=$PROJECT_ID-crypto-raw
-export BQ_DATASET=crypto_raw_dev        # write to DEV while testing
-python main.py
+python ingestion/main.py           # uses GCP_PROJECT / RAW_BUCKET / BQ_DATASET from .env (dev)
 ```
 You should see a raw `.jsonl` file appear in the bucket and rows land in
 `crypto_raw_dev.prices`. Run it a few times — each run appends a new time-series snapshot.
@@ -202,15 +210,12 @@ LIMIT 20;
 ## Transform with dbt
 
 ```bash
-cd ../dbt
-export GCP_PROJECT=$PROJECT_ID
-export DBT_PROFILES_DIR=$PWD        # use the profiles.yml in this folder
-export RAW_DATASET=crypto_raw_dev   # read raw from the dev dataset
-
+cd dbt
 dbt deps                    # install dbt_utils
-dbt build                   # runs models + tests against DEV (default target)
+dbt build                   # runs models + tests against DEV (target/datasets from .env)
 dbt build --target prod     # build the PROD analytics dataset
 ```
+(All the `DBT_*` / `RAW_DATASET` vars come from `.env` — nothing to export by hand.)
 What the models do:
 - `stg_crypto__prices` — cleans/types the raw snapshots (a **view**, free to maintain)
 - `fct_crypto_prices` — **incremental + partitioned** time-series fact; each run only

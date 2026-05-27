@@ -27,20 +27,15 @@ Same code, different datasets — selected by env vars:
 7. **Automate:** `cd ingestion && PROJECT_ID=... ./deploy.sh`
 8. **CI/CD:** push to GitHub, add secrets `GCP_PROJECT` and `GCP_SA_KEY`
 
-## Env vars cheat-sheet
+## Env vars — just load `.env` (one source of truth)
 ```bash
-# Ingestion (local run)
-export GCP_PROJECT=your-project-id
-export RAW_BUCKET=$GCP_PROJECT-crypto-raw
-export BQ_DATASET=crypto_raw_dev        # raw dataset to load into
-
-# dbt (local run)
-export GCP_PROJECT=your-project-id
-export DBT_PROFILES_DIR=$PWD/dbt        # so dbt finds profiles.yml in the repo
-export RAW_DATASET=crypto_raw_dev       # which raw dataset dbt reads from
-export DBT_TARGET=dev                   # dev (default) or prod
-# DBT_METHOD defaults to oauth locally; CI sets it to service-account
+cp .env.example .env               # first time only (.env is gitignored)
+set -a && source .env && set +a    # run from the repo root; sets ALL local vars
 ```
+`.env` holds GCP_PROJECT, RAW_BUCKET, BQ_DATASET, DBT_METHOD=oauth, DBT_TARGET=dev,
+RAW_DATASET, DBT_DATASET, DBT_PROFILES_DIR. No manual `export`s. To target a different
+env for one command, override inline, e.g. `DBT_TARGET=prod dbt build`.
+(CI/cloud don't use `.env` — they inject the same vars themselves. Secrets never go in `.env`.)
 
 ## Common commands
 ```bash
