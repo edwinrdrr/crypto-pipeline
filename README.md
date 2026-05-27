@@ -249,19 +249,30 @@ gcloud scheduler jobs resume crypto-ingest-5min --location=us-central1
 `.github/workflows/dbt-ci.yml` runs automatically with **per-PR isolation + staged promotion**:
 
 ```
-Pull request ─► pr-ephemeral : build into a throwaway schema dbt_ci_pr_<PR#>,
+Pull request ─► pr-ephemeral : SLIM build (only changed models) into dbt_ci_pr_<PR#>,
                                run tests, then DROP it (if: always)
 Merge to main ─► staging : build + test crypto_analytics_staging
                   │
                   └─► prod : (needs: staging) promote → crypto_analytics
+                             then PUBLISH manifest.json to GCS (next PR's baseline)
 ```
 
 - **Per-PR ephemeral schema** — each PR builds into its own `dbt_ci_pr_<n>` dataset (set via
   `DBT_DATASET`), so two open PRs never overwrite each other, and shared dev stays clean. The
   schema is dropped at the end (even on failure).
+- **Slim CI** — the PR job runs `dbt build --select state:modified.body+ --defer --state <prod>`,
+  so it builds **only the models whose SQL changed** (plus downstream) and **defers** unchanged
+  models to the prod tables instead of rebuilding them. The baseline is the prod `manifest.json`,
+  which the `prod` job uploads to `gs://<bucket>/dbt-state/manifest.json` after each deploy.
+  On a project with hundreds of models this turns a full rebuild into seconds.
 - **Staged promotion** — merging deploys to **staging** first; **prod** only runs if staging is
   green (`needs: staging`). That's the dev → staging → prod gate.
 - The `generate_schema_name` macro (`dbt/macros/`) makes dbt use each env's dataset name as-is.
+
+> **Why `.body` and not plain `state:modified`?** Plain `modified` also compares each model's
+> *target relation* (schema). Our prod manifest uses `crypto_analytics` but PRs build into
+> `dbt_ci_pr_<n>` — so every model would look "modified" and Slim CI would rebuild everything.
+> `state:modified.body` compares only the compiled SQL, which is what we actually care about.
 
 > **Want a manual approval before prod?** Add a GitHub **Environment** (`environment: production`)
 > with required reviewers on the `prod` job. Note: environment protection rules need a public repo
@@ -270,13 +281,17 @@ Merge to main ─► staging : build + test crypto_analytics_staging
 Create a CI service account, generate a key, and load the two repo secrets (via the
 `gh` CLI — no clicking needed):
 ```bash
-# 1. CI service account with BigQuery access
+# 1. CI service account with the roles CI needs:
+#    dataEditor (build) + jobUser (run jobs) + dataOwner (drop ephemeral PR datasets)
 gcloud iam service-accounts create dbt-ci --display-name="dbt CI" --project=$PROJECT_ID
 SA="dbt-ci@$PROJECT_ID.iam.gserviceaccount.com"
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
-  --role=roles/bigquery.dataEditor --condition=None
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
-  --role=roles/bigquery.jobUser --condition=None
+for role in roles/bigquery.dataEditor roles/bigquery.jobUser roles/bigquery.dataOwner; do
+  gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
+    --role="$role" --condition=None
+done
+# Storage on the bucket so CI can read/write the Slim-CI manifest state
+gcloud storage buckets add-iam-policy-binding gs://$PROJECT_ID-crypto-raw \
+  --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
 
 # 2. Key file (temporary — gitignored)
 gcloud iam service-accounts keys create sa-key.json --iam-account=$SA
@@ -332,7 +347,9 @@ Full pipeline scaffold + git/CI-CD loop:
       dedicated runtime SA, writing to `crypto_raw`. ✅
 - [x] **Step 2: environment isolation** — per-PR ephemeral `dbt_ci_pr_<n>` schemas + `staging` tier;
       dev→staging→prod promotion (PR #5). ✅
-- [ ] **Step 3: Slim CI** — `state:modified+` so CI only rebuilds changed models (next)
+- [x] **Step 3: Slim CI** — PRs build only changed models (`state:modified.body+ --defer`) against the
+      prod manifest in GCS (PR #8). ✅
+- [ ] **Step 4: orchestration** — local Airflow DAG running ingestion + dbt (next)
 
 ## Project layout
 ```
@@ -421,6 +438,16 @@ The true chronological sequence of this session — not an idealized order:
     Verified: PR #5 built into `dbt_ci_pr_5` then **dropped** it; the merge built **staging** then
     promoted to **prod** (the `prod` job `needs: staging`). 💡 Lesson: per-PR schemas isolate
     concurrent work; a staging gate catches bad data before prod.
+22. **Step 3: Slim CI** (PR #8) — prod publishes its `manifest.json` to GCS; PRs build
+    `state:modified.body+ --defer`. Demonstrated: changing only the mart built **just
+    `fct_crypto_prices`** (1 model, 5 tasks) and deferred the unchanged staging view —
+    vs. a full build (2 models, 8 tasks). 💡 First tried plain `state:modified+` and it
+    rebuilt everything (the cross-env relation false-positive — see gotchas).
+23. **Fixed incremental schema evolution** (PR #9) — `price_direction` didn't reach prod
+    because the incremental mart defaulted to `on_schema_change='ignore'`. Set it to
+    `append_new_columns`; hit two more parse bugs along the way (SQL `--` and a stray `#}`
+    inside the config-block comment — both caught by CI/local compile), then verified the
+    column landed in prod.
 
 ### Gotchas we hit (so future-you doesn't lose time)
 
@@ -435,6 +462,13 @@ The true chronological sequence of this session — not an idealized order:
   the obvious `cloudfunctions`/`run`); the deploy fails without them.
 - **Don't trust "deployed" — trust rows landing.** The default compute SA made the function deploy
   successfully but fail at runtime with no error. Always verify with a forced run + row count.
+- **Slim CI: use `state:modified.body+`, not plain `state:modified+`.** Plain `modified` compares the
+  target relation (schema) too; with ephemeral PR schemas vs prod, *every* model looks modified and
+  Slim CI rebuilds everything. `.body` compares the compiled SQL only.
+- **Incremental models default to `on_schema_change='ignore'`** — new columns silently never reach an
+  already-built table. Set `on_schema_change='append_new_columns'` (or `--full-refresh`).
+- **Inside/around a `{{ config() }}` block, comments must be Jinja `{# ... #}`, not SQL `--`** — and
+  don't put the characters that close a Jinja comment *inside* one, or it ends early and leaks SQL.
 
 ### Live project facts (this run)
 
@@ -444,6 +478,7 @@ The true chronological sequence of this session — not an idealized order:
 | GitHub repo | `edwinrdrr/crypto-pipeline` (private) |
 | Bucket | `crypto-pipeline-260527-18241-crypto-raw` |
 | Datasets | `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics` (+ ephemeral `dbt_ci_pr_<n>`) |
+| Slim CI state | `gs://crypto-pipeline-260527-18241-crypto-raw/dbt-state/manifest.json` |
 | CI service account | `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
 | Function runtime SA | `crypto-ingest-fn@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
 | Scheduler SA | `crypto-scheduler@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |

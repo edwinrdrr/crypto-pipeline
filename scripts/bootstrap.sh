@@ -94,6 +94,9 @@ for role in roles/bigquery.dataEditor roles/bigquery.jobUser roles/bigquery.data
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:$CI_SA" --role="$role" --condition=None >/dev/null
 done
+# storage on the bucket for the Slim CI manifest (read on PR, write on prod)
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+  --member="serviceAccount:$CI_SA" --role=roles/storage.objectAdmin >/dev/null
 TMPKEY="$(mktemp)"
 gcloud iam service-accounts keys create "$TMPKEY" --iam-account="$CI_SA" >/dev/null 2>&1
 gh secret set GCP_PROJECT --body "$PROJECT_ID" >/dev/null
