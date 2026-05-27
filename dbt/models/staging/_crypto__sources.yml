@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: crypto_raw
+    # The raw dataset the ingestion job loads into. Differs per environment:
+    #   dev  -> crypto_raw_dev   prod -> crypto_raw
+    database: "{{ env_var('GCP_PROJECT') }}"
+    schema: "{{ env_var('RAW_DATASET', 'crypto_raw_dev') }}"
+    tables:
+      - name: prices
+        description: "Raw CoinGecko price snapshots, one row per coin per 5-min poll."
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: { count: 15, period: minute }
+          error_after: { count: 60, period: minute }
+        columns:
+          - name: coin
+            tests: [not_null]
+          - name: price_usd
+          - name: ingested_at
+            tests: [not_null]

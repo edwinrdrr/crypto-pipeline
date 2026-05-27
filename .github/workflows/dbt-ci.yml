@@ -1,0 +1,56 @@
+name: dbt CI/CD
+
+# CI  : on every PR -> build + test against the DEV dataset.
+# CD  : on merge to main -> build + test against PROD.
+#
+# Required GitHub repo secrets:
+#   GCP_PROJECT          your project id
+#   GCP_SA_KEY           JSON key of a service account with BigQuery access
+#
+# Auth model: we write the SA key to a file and point dbt's prod target at it.
+# (For a real production setup, prefer Workload Identity Federation over a key.)
+
+on:
+  pull_request:
+    paths: ["dbt/**", ".github/workflows/dbt-ci.yml"]
+  push:
+    branches: [main]
+    paths: ["dbt/**", ".github/workflows/dbt-ci.yml"]
+
+jobs:
+  dbt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt
+    env:
+      GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
+      DBT_METHOD: service-account     # CI always uses the SA key (no interactive oauth)
+      # PRs target dev; pushes to main target prod.
+      DBT_TARGET: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
+      RAW_DATASET: ${{ github.event_name == 'push' && 'crypto_raw' || 'crypto_raw_dev' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt
+        run: pip install dbt-bigquery==1.* dbt-utils
+
+      - name: Write service account key
+        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+
+      - name: dbt deps
+        run: dbt deps
+
+      - name: dbt build (${{ env.DBT_TARGET }})
+        run: dbt build --target "$DBT_TARGET"
+
+      - name: dbt source freshness
+        run: dbt source freshness --target "$DBT_TARGET"
+        continue-on-error: true   # informational; don't fail the pipeline on stale data

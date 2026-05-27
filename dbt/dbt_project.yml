@@ -1,0 +1,16 @@
+name: "crypto"
+version: "1.0.0"
+config-version: 2
+
+profile: "crypto"
+
+model-paths: ["models"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  crypto:
+    staging:
+      +materialized: view       # cheap: views scan the raw table on read
+    marts:
+      +materialized: incremental # only process new rows each run (cheap + fast)

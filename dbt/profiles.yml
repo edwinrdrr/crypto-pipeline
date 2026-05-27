@@ -1,0 +1,31 @@
+# dbt connection profiles. Two targets = two ENVIRONMENTS.
+#   dev  -> writes to crypto_analytics_dev   (default, used locally)
+#   prod -> writes to crypto_analytics        (used by CI on merge to main)
+#
+# Auth is env-driven so the SAME file works locally and in CI:
+#   - Local:  DBT_METHOD defaults to 'oauth' -> uses `gcloud auth application-default login`
+#   - CI:     set DBT_METHOD=service-account + GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json
+# (keyfile is ignored when method is oauth, so the default empty path is harmless.)
+
+crypto:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: bigquery
+      method: "{{ env_var('DBT_METHOD', 'oauth') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      project: "{{ env_var('GCP_PROJECT') }}"
+      dataset: crypto_analytics_dev
+      location: US
+      threads: 4
+      priority: interactive
+
+    prod:
+      type: bigquery
+      method: "{{ env_var('DBT_METHOD', 'service-account') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      project: "{{ env_var('GCP_PROJECT') }}"
+      dataset: crypto_analytics
+      location: US
+      threads: 4
+      priority: interactive
