@@ -41,9 +41,11 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   - [x] prod job publishes `manifest.json` to GCS; PR job builds `state:modified.body+ --defer`
   - [x] verified: changing only the mart built 1 model (deferred the unchanged view), not a full rebuild
   - [x] used `.body` (not plain `modified`) to avoid cross-env relation false-positives
-- [ ] **4. Orchestration** — local Airflow DAG (free) running ingestion + dbt
-  - [ ] docker-compose Airflow
-  - [ ] DAG: ingest → dbt build → dbt test
+- [x] **4. Orchestration** — local Airflow + free 24/7 cron ✅ DONE
+  - [x] docker-compose Airflow (LocalExecutor + Postgres) — learning the tool (dev only)
+  - [x] DAG `extract_load → dbt_run → dbt_test` (dev), verified incl. an auto-retry recovery
+  - [x] GitHub Actions cron (`scheduled-dbt.yml`, every 6h) for the real free 24/7 prod transform
+  - 💡 production Airflow = Cloud Composer (~$300+/mo) — avoided; local is dev/learning only
 
 ## Real-world patterns / vocabulary to know
 
@@ -102,4 +104,9 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 - 2026-05-28: **PR #9** fixed incremental schema evolution (`on_schema_change='append_new_columns'`)
   so new columns reach the prod table; verified `price_direction` landed. Hit two parse bugs en route
   (SQL `--` and a stray `#}` inside the config-block comment) — both caught before merge.
-  **Next: step 4 (local Airflow orchestration).**
+- 2026-05-28: **Completed step 4 (orchestration).** Stood up local Airflow (docker-compose,
+  LocalExecutor) with DAG `extract_load → dbt_run → dbt_test`; verified (the @hourly run passed and a
+  manual run auto-retried through a BigQuery concurrency conflict). Added a free GitHub Actions cron
+  (`scheduled-dbt.yml`, every 6h) for the real 24/7 prod transform. Hit local-Airflow gotchas: root-owned
+  `logs/` (logging handler error), overriding the image entrypoint broke `getuser()`, port 8080 taken → 8088.
+  **All 4 learning-path steps done.** 🎉

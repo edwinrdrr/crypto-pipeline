@@ -330,6 +330,29 @@ gh run view <RUN_ID> --log-failed     # read a failure
 gh pr merge <PR#> --squash --delete-branch
 ```
 
+## Orchestration (Step 4)
+
+Three layers, by what actually runs them:
+
+| What | Tool | Runs where | Cost |
+|------|------|-----------|------|
+| **Ingestion** every 5 min | **Cloud Scheduler** → Cloud Function | GCP, 24/7 | free |
+| **Transform** on a schedule | **GitHub Actions cron** (`.github/workflows/scheduled-dbt.yml`) | GitHub, 24/7 | free* |
+| **Learning the orchestrator** | **local Airflow** (`airflow/`) | your machine (dev only) | free |
+
+- **Cloud Scheduler** is a *timer* — fires one trigger, no pipeline logic. Already deployed.
+- **GitHub Actions cron** runs `dbt build --target prod` every 6h — the free, 24/7 way to keep
+  `crypto_analytics` fresh (the gap, since dbt otherwise only runs on merge). *\*Private repos get
+  2,000 free Action-min/mo; every-6h ≈ 240 min/mo. Don't make it hourly (~1,800 min/mo).*
+- **Local Airflow** (`airflow/`) is the real *orchestrator* — a DAG `extract_load → dbt_run →
+  dbt_test` with dependencies, retries, and a UI. It's **dev/learning only** (runs only while your
+  machine + Docker are up); production Airflow means Cloud Composer (~$300+/mo), which we avoid.
+  See `airflow/README.md` to run it locally.
+
+> Why three? A **timer** triggers one thing; a **CI runner** runs a script of steps on a cron; an
+> **orchestrator** runs a *graph* with retries/backfills/observability. You learn the orchestrator
+> locally, but use the free timer + runner for actual 24/7 work at this scale.
+
 Branch = sandbox · `main` = source of truth · merging = promotion to prod.
 
 ## Project status
@@ -349,7 +372,8 @@ Full pipeline scaffold + git/CI-CD loop:
       dev→staging→prod promotion (PR #5). ✅
 - [x] **Step 3: Slim CI** — PRs build only changed models (`state:modified.body+ --defer`) against the
       prod manifest in GCS (PR #8). ✅
-- [ ] **Step 4: orchestration** — local Airflow DAG running ingestion + dbt (next)
+- [x] **Step 4: orchestration** — local Airflow DAG (`extract_load→dbt_run→dbt_test`, verified) for
+      learning the tool + a free GitHub Actions cron (`scheduled-dbt.yml`) for real 24/7 transforms. ✅
 
 ## Project layout
 ```
@@ -370,6 +394,10 @@ crypto-pipeline/
     main.tf  variables.tf  outputs.tf  terraform.tfvars.example
   .github/workflows/
     dbt-ci.yml           # CI/CD: PR→ephemeral schema, merge→staging→prod
+    scheduled-dbt.yml    # cron: dbt build --target prod every 6h (free 24/7 transform)
+  airflow/               # Local Airflow (learning the orchestrator; dev only)
+    docker-compose.yaml  #   LocalExecutor + Postgres
+    dags/crypto_pipeline_dag.py   # extract_load → dbt_run → dbt_test
   scripts/               # Reproducibility
     install-tools.sh     #   gcloud + terraform + dbt venv + gh (pinned versions)
     bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
@@ -448,6 +476,12 @@ The true chronological sequence of this session — not an idealized order:
     `append_new_columns`; hit two more parse bugs along the way (SQL `--` and a stray `#}`
     inside the config-block comment — both caught by CI/local compile), then verified the
     column landed in prod.
+24. **Step 4: orchestration** — stood up **local Airflow** (docker-compose, LocalExecutor) and a
+    DAG `extract_load → dbt_run → dbt_test`. Verified: the `@hourly` run succeeded on its own, and a
+    manual run's `dbt_run` hit a BigQuery concurrency conflict (two runs, same dev table) and
+    **auto-retried to success** — orchestration earning its keep. Added a free **GitHub Actions cron**
+    (`scheduled-dbt.yml`, every 6h) for the real 24/7 transform. 💡 Lesson: local Airflow is for
+    *learning/dev*; for $0 always-on scheduling use Cloud Scheduler (ingest) + Actions cron (transform).
 
 ### Gotchas we hit (so future-you doesn't lose time)
 
@@ -469,6 +503,12 @@ The true chronological sequence of this session — not an idealized order:
   already-built table. Set `on_schema_change='append_new_columns'` (or `--full-refresh`).
 - **Inside/around a `{{ config() }}` block, comments must be Jinja `{# ... #}`, not SQL `--`** — and
   don't put the characters that close a Jinja comment *inside* one, or it ends early and leaks SQL.
+- **Local Airflow with a custom UID**: (1) Docker creates `./logs` as root → "Unable to configure
+  handler 'processor'"; pre-create `logs/` owned by your uid. (2) Don't override the image
+  `entrypoint` — it sets up a valid user for arbitrary UIDs (else `getuser()` fails); use the
+  `_AIRFLOW_DB_MIGRATE`/`_AIRFLOW_WWW_USER_*` env vars instead. (3) Port 8080 is often taken — we use 8088.
+- **GitHub Actions cron on a private repo isn't unlimited** — 2,000 free min/mo; keep the schedule
+  modest (we use every 6h, not hourly). Scheduled runs also need the workflow on the default branch.
 
 ### Live project facts (this run)
 
