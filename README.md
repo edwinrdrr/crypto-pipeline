@@ -12,8 +12,8 @@ Goal: learn **environments (dev/prod), CI/CD, and cloud** end-to-end at **~$0/mo
 
 ## Cost guardrails (do these FIRST)
 
-1. **Set a budget alert** — GCP Console → Billing → Budgets & alerts → create budget
-   `$5`, alert at 50% / 90% / 100%. This emails you before any surprise.
+1. **Set a budget alert** — `$5`, alert at 50% / 90% / 100% (emails you before any surprise).
+   See setup **§1b** for the exact CLI command (or do it in Console → Billing → Budgets & alerts).
 2. **Never enable Cloud Composer / Dataflow / large clusters** — those are the only
    things that cost real money. We run Airflow locally instead (later step).
 3. Use **batch loads** (this code does) — they're free. Avoid streaming inserts.
@@ -36,7 +36,17 @@ exec -l $SHELL          # reload shell so `gcloud`/`bq` are on PATH
 cd ~/Documents/learning/crypto-pipeline
 python3 -m venv .venv && source .venv/bin/activate
 pip install dbt-bigquery
+
+# Terraform — install a recent version into ~/bin
+# (older builds like v1.6.0 fail with an "openpgp: key expired" GPG error)
+mkdir -p ~/bin && cd ~
+curl -sSL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
+unzip -oq tf.zip terraform -d ~/bin && rm tf.zip
+export PATH="$HOME/bin:$PATH"   # add to ~/.bashrc to make permanent
+terraform version
 ```
+> `gh` (GitHub CLI) is also required for the CI/CD steps — install from https://cli.github.com
+> and run `gh auth login` once.
 
 ### 1. GCP auth + a fresh dedicated project
 ```bash
@@ -53,9 +63,32 @@ gcloud billing projects link "$PROJECT_ID" --billing-account=YOUR_BILLING_ACCOUN
 gcloud config set project "$PROJECT_ID"
 gcloud auth application-default set-quota-project "$PROJECT_ID"   # avoids quota warnings
 
-# Enable the APIs we need
-gcloud services enable storage.googleapis.com bigquery.googleapis.com \
-    cloudfunctions.googleapis.com cloudscheduler.googleapis.com run.googleapis.com
+# Enable ALL the APIs this project uses (the gen2 function needs cloudbuild,
+# artifactregistry and eventarc too — easy to miss and the deploy fails without them)
+gcloud services enable \
+    storage.googleapis.com bigquery.googleapis.com \
+    cloudfunctions.googleapis.com cloudscheduler.googleapis.com run.googleapis.com \
+    cloudbuild.googleapis.com artifactregistry.googleapis.com eventarc.googleapis.com \
+    billingbudgets.googleapis.com
+```
+
+### 1b. Set a $5 budget alert (do this before provisioning)
+```bash
+BILLING_ACCOUNT_ID=YOUR_BILLING_ACCOUNT_ID    # from `gcloud billing accounts list`
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+
+# NOTE: the amount currency MUST match your billing account's currency.
+# If your account is USD use `--budget-amount=5USD`. If it's another currency
+# (e.g. IDR), OMIT the currency and pass the native amount (80000 IDR ≈ $5),
+# otherwise you get `INVALID_ARGUMENT`.
+gcloud billing budgets create \
+  --billing-account="$BILLING_ACCOUNT_ID" \
+  --display-name="crypto-pipeline-learn (~\$5)" \
+  --budget-amount=80000 \
+  --threshold-rule=percent=0.5 \
+  --threshold-rule=percent=0.9 \
+  --threshold-rule=percent=1.0 \
+  --filter-projects="projects/$PROJECT_NUMBER"
 ```
 > **Note on cost / free trial:** this pipeline lives inside the **Always Free tier**
 > (BigQuery 1 TB queries + 10 GB storage, GCS 5 GB, Cloud Functions, Scheduler), which
@@ -125,8 +158,27 @@ What the models do:
 cd ../ingestion
 PROJECT_ID=$PROJECT_ID ./deploy.sh
 ```
-Deploys the gen2 **Cloud Function** (`ingest`) and a **Cloud Scheduler** job
-(`*/5 * * * *`) that invokes it securely via a dedicated service account.
+`deploy.sh` sets up **two** service accounts (this is the part that's easy to get wrong):
+
+1. **`crypto-ingest-fn`** — the function's *runtime* identity, with `bigquery.dataEditor`,
+   `bigquery.jobUser`, and `storage.objectAdmin` on the bucket. ⚠️ **Do not** rely on the
+   default compute SA — on new projects it has no permissions, so the function deploys
+   fine but **fails silently at runtime** (no rows land, often no error in logs).
+2. **`crypto-scheduler`** — the identity Cloud Scheduler uses to invoke the private
+   function (granted `run.invoker`), via an OIDC token.
+
+It deploys the gen2 **Cloud Function** (`ingest`) and a **Cloud Scheduler** job (`*/5 * * * *`).
+
+**Verify it actually works** (don't trust "deployed" — trust rows landing):
+```bash
+gcloud scheduler jobs run crypto-ingest-5min --location=us-central1   # force a run now
+# then confirm a NEW snapshot appears (count should grow each run):
+bq query --use_legacy_sql=false \
+  'SELECT COUNT(DISTINCT ingested_at) FROM `'"$PROJECT_ID"'.crypto_raw.prices`'
+# pause / resume the schedule any time:
+gcloud scheduler jobs pause  crypto-ingest-5min --location=us-central1
+gcloud scheduler jobs resume crypto-ingest-5min --location=us-central1
+```
 
 ## CI/CD (GitHub Actions)
 
@@ -134,9 +186,29 @@ Deploys the gen2 **Cloud Function** (`ingest`) and a **Cloud Scheduler** job
 - **Pull request** → `dbt build` + tests against **dev**
 - **Merge to main** → `dbt build` + tests against **prod**
 
-Add two repo secrets (Settings → Secrets → Actions):
-- `GCP_PROJECT` — your project id
-- `GCP_SA_KEY` — JSON key of a service account with BigQuery + Storage access
+Create a CI service account, generate a key, and load the two repo secrets (via the
+`gh` CLI — no clicking needed):
+```bash
+# 1. CI service account with BigQuery access
+gcloud iam service-accounts create dbt-ci --display-name="dbt CI" --project=$PROJECT_ID
+SA="dbt-ci@$PROJECT_ID.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
+  --role=roles/bigquery.dataEditor --condition=None
+gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
+  --role=roles/bigquery.jobUser --condition=None
+
+# 2. Key file (temporary — gitignored)
+gcloud iam service-accounts keys create sa-key.json --iam-account=$SA
+
+# 3. Load secrets into GitHub, then DELETE the local key
+gh secret set GCP_PROJECT --body "$PROJECT_ID"
+gh secret set GCP_SA_KEY < sa-key.json
+rm sa-key.json
+```
+> ⚠️ **Seed the raw tables before CI runs.** dbt's `source('crypto_raw','prices')` fails if
+> the table doesn't exist. Run the ingestion once into **both** `crypto_raw_dev` (for PR/dev
+> CI) and `crypto_raw` (for the merge/prod build) — see "Run the ingestion locally" above,
+> changing `BQ_DATASET` each time.
 
 ## Git + CI/CD workflow (the real-world loop)
 
@@ -174,8 +246,9 @@ Full pipeline scaffold + git/CI-CD loop:
 - [x] **Terraform** — bucket + 4 datasets as IaC (`terraform/`) — *applied*
 - [x] **Git repo + PR flow** — branch → PR → CI → merge (repo: `edwinrdrr/crypto-pipeline`)
 - [x] **CI green + first prod merge** — PR #1 merged; new column verified live in `crypto_analytics` ✅
-- [ ] **Cloud Function + Cloud Scheduler** — coded (`ingestion/deploy.sh`) but **not yet deployed**
-      (data is seeded manually for now; deploy this to auto-ingest every 5 min)
+- [x] **Docs PR** — PR #2 merged (journey log + committed lockfiles)
+- [x] **Cloud Function + Cloud Scheduler** — deployed & verified; runs every 5 min as a
+      dedicated runtime SA, writing to `crypto_raw`. ✅
 - [ ] **Step 2: environment isolation** — `staging` tier + per-PR ephemeral schemas (next)
 
 ## Project layout
@@ -243,6 +316,16 @@ The true chronological sequence of this session — not an idealized order:
     so dbt's `source()` had a table to read.
 16. **Closed the loop** 🎉 — re-ran CI on PR #1 → **GREEN** → merged (squash) → CD built prod →
     verified `price_change_pct_since_prev` is live in `crypto_analytics.fct_crypto_prices`.
+17. **Documented it all via PR #2** — wrote this journey log + committed the dbt and Terraform
+    **lockfiles** (gitignored the machine-specific `dbt/.user.yml`). CI ran again (because the PR
+    touched `dbt/**`) → green → merged.
+18. **Deployed the 5-min automation** — ran `deploy.sh`: gen2 Cloud Function `crypto-ingest`
+    + Cloud Scheduler `crypto-ingest-5min` (`*/5 * * * *`).
+19. **Hit + fixed the runtime-SA gap** 💡 — the function deployed but wrote **no rows**: it ran as
+    the **default compute SA**, which on a new project has **no permissions** (and failed silently).
+    Fix: created a dedicated **`crypto-ingest-fn`** runtime SA (BigQuery + bucket Storage roles),
+    pointed the function at it, force-ran the scheduler, and **verified a new snapshot landed**.
+    Updated `deploy.sh` so this is automatic next time.
 
 ### Gotchas we hit (so future-you doesn't lose time)
 
@@ -253,6 +336,10 @@ The true chronological sequence of this session — not an idealized order:
   newer Terraform — we put **v1.9.8 in `~/bin/terraform`** (the stock `/usr/local/bin/terraform` is old).
 - **`bq` needs `gcloud` on PATH** — run `export PATH="$HOME/google-cloud-sdk/bin:$PATH"` first.
 - **Seed the raw table before CI runs** — dbt fails if `source('crypto_raw','prices')` doesn't exist yet.
+- **gen2 Cloud Functions need extra APIs** — `cloudbuild`, `artifactregistry`, `eventarc` (beyond
+  the obvious `cloudfunctions`/`run`); the deploy fails without them.
+- **Don't trust "deployed" — trust rows landing.** The default compute SA made the function deploy
+  successfully but fail at runtime with no error. Always verify with a forced run + row count.
 
 ### Live project facts (this run)
 
@@ -263,6 +350,10 @@ The true chronological sequence of this session — not an idealized order:
 | Bucket | `crypto-pipeline-260527-18241-crypto-raw` |
 | Datasets | `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics` |
 | CI service account | `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
+| Function runtime SA | `crypto-ingest-fn@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
+| Scheduler SA | `crypto-scheduler@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
+| Cloud Function | `crypto-ingest` (gen2, us-central1) |
+| Scheduler job | `crypto-ingest-5min` (`*/5 * * * *`, ENABLED) |
 | Budget | "crypto-pipeline-learn (~$5)" = 80,000 IDR, alerts 50/90/100% |
 
 > **Key ordering insight:** we built *all the code and the entire git/CI loop before touching

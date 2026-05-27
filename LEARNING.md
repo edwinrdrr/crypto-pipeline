@@ -64,6 +64,9 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 - **Bucket:** `crypto-pipeline-260527-18241-crypto-raw`
 - **Datasets:** `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics`
 - **CI service account:** `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com`
+- **Function runtime SA:** `crypto-ingest-fn@...` (BigQuery + bucket Storage roles)
+- **Scheduler SA:** `crypto-scheduler@...` (run.invoker)
+- **Cloud Function:** `crypto-ingest` (gen2, us-central1) · **Scheduler:** `crypto-ingest-5min` (`*/5 * * * *`, ENABLED)
 - **Budget:** "crypto-pipeline-learn (~$5)" = 80,000 IDR, alerts 50/90/100%
 - **Tooling:** gcloud at `~/google-cloud-sdk/bin`, terraform at `~/bin/terraform` (v1.9.8),
   dbt in `.venv` (v1.11.11). Note: stock `/usr/local/bin/terraform` v1.6.0 has a GPG bug — use `~/bin`.
@@ -75,4 +78,9 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   (caught a real `dbt-utils` bug, then failed on missing secrets) → provisioned GCP
   (fresh project, $5 budget, Terraform infra, CI service account + GitHub secrets) →
   seeded raw tables → CI green → merged → CD built prod → verified `price_change_pct_since_prev`
-  live in `crypto_analytics.fct_crypto_prices`. **Next: step 2 (staging + per-PR schemas).**
+  live in `crypto_analytics.fct_crypto_prices`.
+- 2026-05-27: Documented the journey via **PR #2** (+ committed dbt/Terraform lockfiles).
+- 2026-05-27: **Deployed the 5-min automation** (`deploy.sh`). Found the function wrote no rows
+  because it ran as the default compute SA (no perms on a new project); fixed by giving it a
+  dedicated **`crypto-ingest-fn`** runtime SA, then verified a new snapshot landed in `crypto_raw`.
+  Updated `deploy.sh` to create/use the runtime SA automatically. **Next: step 2 (staging + per-PR schemas).**
