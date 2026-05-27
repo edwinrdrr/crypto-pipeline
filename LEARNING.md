@@ -32,9 +32,11 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   - [x] open PR #1, watch CI run — CI caught a real bug (`dbt-utils` pip error), then failed on missing secrets
   - [x] provision GCP (project, budget, Terraform, CI service account + secrets)
   - [x] CI green → merge to main → CD built prod → verified new column live in `crypto_analytics`
-- [ ] **2. Environment isolation** — add a `staging` tier + per-PR/per-dev schemas
-  - [ ] `generate_schema_name` macro for per-PR dev schemas
-  - [ ] add `analytics_staging` dataset + CI hop dev→staging→prod
+- [x] **2. Environment isolation** — `staging` tier + per-PR/per-dev schemas ✅ DONE (PR #5)
+  - [x] `generate_schema_name` macro (clean per-env names, no prefixing)
+  - [x] dev dataset env-driven via `DBT_DATASET`; CI builds each PR into `dbt_ci_pr_<n>` and **drops it**
+  - [x] `crypto_analytics_staging` dataset (Terraform) + CI hop **dev(ephemeral) → staging → prod**
+        (prod job `needs: staging`); verified ephemeral build+drop and staging→prod promotion
 - [ ] **3. Slim CI** — `state:modified+` so CI only rebuilds changed models (cheap/fast)
   - [ ] store prod manifest as CI artifact for `--defer` / `state:` comparison
 - [ ] **4. Orchestration** — local Airflow DAG (free) running ingestion + dbt
@@ -62,7 +64,7 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 - **GCP project:** `crypto-pipeline-260527-18241` (billing-linked, IDR account)
 - **GitHub repo:** `edwinrdrr/crypto-pipeline` (private)
 - **Bucket:** `crypto-pipeline-260527-18241-crypto-raw`
-- **Datasets:** `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics`
+- **Datasets:** `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics` (+ ephemeral `dbt_ci_pr_<n>` per PR, auto-dropped)
 - **CI service account:** `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com`
 - **Function runtime SA:** `crypto-ingest-fn@...` (BigQuery + bucket Storage roles)
 - **Scheduler SA:** `crypto-scheduler@...` (run.invoker)
@@ -83,4 +85,10 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
 - 2026-05-27: **Deployed the 5-min automation** (`deploy.sh`). Found the function wrote no rows
   because it ran as the default compute SA (no perms on a new project); fixed by giving it a
   dedicated **`crypto-ingest-fn`** runtime SA, then verified a new snapshot landed in `crypto_raw`.
-  Updated `deploy.sh` to create/use the runtime SA automatically. **Next: step 2 (staging + per-PR schemas).**
+  Updated `deploy.sh` to create/use the runtime SA automatically.
+- 2026-05-28: Added cost projection to README (PR #4): ~$0–0.50/yr running 24/7, with caveats.
+- 2026-05-28: **Completed step 2 (environment isolation)** via **PR #5**. Added `generate_schema_name`
+  macro + env-driven `DBT_DATASET`; CI now builds each PR into an ephemeral `dbt_ci_pr_<n>` schema
+  and drops it; added `crypto_analytics_staging` + a **dev→staging→prod** CI/CD promotion (prod
+  `needs: staging`). Verified: PR #5 built+dropped `dbt_ci_pr_5`; merge built staging then prod.
+  **Next: step 3 (Slim CI — `state:modified+`).**
