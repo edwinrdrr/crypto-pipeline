@@ -1,6 +1,11 @@
-# dbt connection profiles. Two targets = two ENVIRONMENTS.
-#   dev  -> writes to crypto_analytics_dev   (default, used locally)
-#   prod -> writes to crypto_analytics        (used by CI on merge to main)
+# dbt connection profiles. Each target = one ENVIRONMENT.
+#   dev      -> DBT_DATASET (default crypto_analytics_dev). Per-PR CI overrides this
+#               to an ephemeral schema like dbt_ci_pr_42 for full isolation.
+#   staging  -> crypto_analytics_staging (built on merge to main, before prod)
+#   prod     -> crypto_analytics          (promoted after staging passes)
+#
+# Each env also reads a different RAW source dataset (RAW_DATASET):
+#   dev reads crypto_raw_dev; staging + prod read crypto_raw (realistic data).
 #
 # Auth is env-driven so the SAME file works locally and in CI:
 #   - Local:  DBT_METHOD defaults to 'oauth' -> uses `gcloud auth application-default login`
@@ -15,7 +20,17 @@ crypto:
       method: "{{ env_var('DBT_METHOD', 'oauth') }}"
       keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
       project: "{{ env_var('GCP_PROJECT') }}"
-      dataset: crypto_analytics_dev
+      dataset: "{{ env_var('DBT_DATASET', 'crypto_analytics_dev') }}"
+      location: US
+      threads: 4
+      priority: interactive
+
+    staging:
+      type: bigquery
+      method: "{{ env_var('DBT_METHOD', 'service-account') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
+      project: "{{ env_var('GCP_PROJECT') }}"
+      dataset: crypto_analytics_staging
       location: US
       threads: 4
       priority: interactive

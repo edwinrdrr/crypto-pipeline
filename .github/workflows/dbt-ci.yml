@@ -1,14 +1,13 @@
 name: dbt CI/CD
 
-# CI  : on every PR -> build + test against the DEV dataset.
-# CD  : on merge to main -> build + test against PROD.
+# Environment-isolated CI/CD:
+#   Pull request  -> build into an EPHEMERAL per-PR schema (dbt_ci_pr_<n>), then DROP it.
+#   Merge to main -> build STAGING, and only if that passes, promote to PROD.
 #
 # Required GitHub repo secrets:
-#   GCP_PROJECT          your project id
-#   GCP_SA_KEY           JSON key of a service account with BigQuery access
-#
-# Auth model: we write the SA key to a file and point dbt's prod target at it.
-# (For a real production setup, prefer Workload Identity Federation over a key.)
+#   GCP_PROJECT   your project id
+#   GCP_SA_KEY    JSON key of a service account with BigQuery access (+ dataset delete
+#                 for the ephemeral cleanup). For production prefer Workload Identity Federation.
 
 on:
   pull_request:
@@ -17,42 +16,89 @@ on:
     branches: [main]
     paths: ["dbt/**", ".github/workflows/dbt-ci.yml"]
 
+env:
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
+  GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
+  DBT_METHOD: service-account
+
 jobs:
-  dbt:
+  # ── PR: isolated build in a throwaway schema, dropped afterwards ───────────
+  pr-ephemeral:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: dbt
     env:
-      GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
-      DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
-      DBT_METHOD: service-account     # CI always uses the SA key (no interactive oauth)
-      # PRs target dev; pushes to main target prod.
-      DBT_TARGET: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
-      RAW_DATASET: ${{ github.event_name == 'push' && 'crypto_raw' || 'crypto_raw_dev' }}
-
+      DBT_TARGET: dev
+      RAW_DATASET: crypto_raw_dev
+      DBT_DATASET: dbt_ci_pr_${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install dbt
-        # dbt-utils is a dbt package (installed by `dbt deps` from packages.yml),
-        # NOT a pip package — only dbt-bigquery comes from PyPI.
-        run: pip install dbt-bigquery==1.*
-
+      - run: pip install dbt-bigquery==1.* google-cloud-bigquery
       - name: Write service account key
         run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - run: dbt deps
+      - name: dbt build into ephemeral schema (${{ env.DBT_DATASET }})
+        run: dbt build --target dev
+      - name: Drop ephemeral schema
+        if: always()        # clean up even if the build failed
+        working-directory: ${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import os
+          from google.cloud import bigquery
+          client = bigquery.Client(project=os.environ["GCP_PROJECT"])
+          ds = f"{os.environ['GCP_PROJECT']}.{os.environ['DBT_DATASET']}"
+          client.delete_dataset(ds, delete_contents=True, not_found_ok=True)
+          print("dropped", ds)
+          PY
 
-      - name: dbt deps
-        run: dbt deps
+  # ── merge to main, step 1: build + test STAGING ───────────────────────────
+  staging:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt
+    env:
+      DBT_TARGET: staging
+      RAW_DATASET: crypto_raw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install dbt-bigquery==1.*
+      - name: Write service account key
+        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - run: dbt deps
+      - name: dbt build (staging)
+        run: dbt build --target staging
 
-      - name: dbt build (${{ env.DBT_TARGET }})
-        run: dbt build --target "$DBT_TARGET"
-
-      - name: dbt source freshness
-        run: dbt source freshness --target "$DBT_TARGET"
-        continue-on-error: true   # informational; don't fail the pipeline on stale data
+  # ── merge to main, step 2: promote to PROD (only if staging passed) ────────
+  prod:
+    if: github.event_name == 'push'
+    needs: staging        # the promotion gate: prod runs only after staging is green
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dbt
+    env:
+      DBT_TARGET: prod
+      RAW_DATASET: crypto_raw
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install dbt-bigquery==1.*
+      - name: Write service account key
+        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - run: dbt deps
+      - name: dbt build (prod)
+        run: dbt build --target prod

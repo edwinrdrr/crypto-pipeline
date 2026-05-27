@@ -37,10 +37,11 @@ resource "google_storage_bucket" "raw" {
 # Raw (loaded by the ingestion job) + analytics (built by dbt), each per-env.
 locals {
   datasets = {
-    crypto_raw_dev        = "Raw CoinGecko data - dev"
-    crypto_raw            = "Raw CoinGecko data - prod"
-    crypto_analytics_dev  = "dbt models - dev"
-    crypto_analytics      = "dbt models - prod"
+    crypto_raw_dev           = "Raw CoinGecko data - dev"
+    crypto_raw               = "Raw CoinGecko data - prod"
+    crypto_analytics_dev     = "dbt models - dev"
+    crypto_analytics_staging = "dbt models - staging"
+    crypto_analytics         = "dbt models - prod"
   }
 }
 
