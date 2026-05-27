@@ -19,6 +19,9 @@ dbt/logs/
 dbt/.user.yml          # machine-specific anonymous id
 # NOTE: dbt/package-lock.yml IS committed on purpose (pins package versions)
 
+# Airflow (local) runtime — secrets (gcp-key.json, .env) already covered above
+airflow/logs/
+
 # Terraform
 terraform/.terraform/
 *.tfstate
