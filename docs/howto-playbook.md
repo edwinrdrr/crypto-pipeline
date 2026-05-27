@@ -7,10 +7,15 @@ things you actually do. Each recipe is end-to-end and grounded in this project.
 **Assumed setup once per shell** (so commands below "just work"):
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
-export GCP_PROJECT=crypto-pipeline-260527-18241        # your project id
 cd ~/Documents/learning/crypto-pipeline
 source .venv/bin/activate                              # dbt + python deps
+
+# Local config: copy the template once, then load it each shell (better than re-typing exports).
+cp .env.example .env          # first time only (.env is gitignored)
+set -a && source .env && set +a   # loads GCP_PROJECT, DBT_TARGET=dev, datasets, etc.
 ```
+> `.env` is a **local convenience** — it just sets the same env vars CI injects via the workflow.
+> Config only; never put secrets (keys) in it. (See `docs/start-here-mental-model.md` FAQ.)
 
 ---
 
