@@ -1,13 +1,12 @@
 name: dbt CI/CD
 
-# Environment-isolated CI/CD:
-#   Pull request  -> build into an EPHEMERAL per-PR schema (dbt_ci_pr_<n>), then DROP it.
-#   Merge to main -> build STAGING, and only if that passes, promote to PROD.
+# Environment-isolated CI/CD with SLIM CI:
+#   Pull request  -> build only CHANGED models (state:modified+ vs the prod manifest),
+#                    into an EPHEMERAL per-PR schema (dbt_ci_pr_<n>), then DROP it.
+#   Merge to main -> build STAGING, then PROD; PROD uploads its manifest.json to GCS
+#                    so the next PR knows what "changed" means.
 #
-# Required GitHub repo secrets:
-#   GCP_PROJECT   your project id
-#   GCP_SA_KEY    JSON key of a service account with BigQuery access (+ dataset delete
-#                 for the ephemeral cleanup). For production prefer Workload Identity Federation.
+# Required GitHub repo secrets: GCP_PROJECT, GCP_SA_KEY.
 
 on:
   pull_request:
@@ -18,12 +17,14 @@ on:
 
 env:
   GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  BUCKET: ${{ secrets.GCP_PROJECT }}-crypto-raw
   DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
   GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
   DBT_METHOD: service-account
+  STATE_OBJECT: dbt-state/manifest.json     # the prod manifest, stored in GCS
 
 jobs:
-  # ── PR: isolated build in a throwaway schema, dropped afterwards ───────────
+  # ── PR: Slim CI — build only changed models, in a throwaway schema, then drop ──
   pr-ephemeral:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -39,14 +40,42 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install dbt-bigquery==1.* google-cloud-bigquery
+      - run: pip install dbt-bigquery==1.* google-cloud-bigquery google-cloud-storage
       - name: Write service account key
         run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
       - run: dbt deps
-      - name: dbt build into ephemeral schema (${{ env.DBT_DATASET }})
-        run: dbt build --target dev
+
+      - name: Fetch prod manifest (Slim CI state)
+        working-directory: ${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import os
+          from google.cloud import storage
+          c = storage.Client(project=os.environ["GCP_PROJECT"])
+          blob = c.bucket(os.environ["BUCKET"]).blob(os.environ["STATE_OBJECT"])
+          if blob.exists():
+              os.makedirs("prod-state", exist_ok=True)
+              blob.download_to_filename("prod-state/manifest.json")
+              print("state manifest downloaded")
+          else:
+              print("no prior manifest — will full-build")
+          PY
+
+      - name: dbt build (Slim CI — only changed models)
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/prod-state/manifest.json" ]; then
+            echo "::notice::Slim CI — building state:modified.body+ (unchanged models deferred to prod)"
+            # .body compares the SQL only. Plain state:modified also compares the target
+            # relation (schema), which differs here (prod crypto_analytics vs ephemeral
+            # dbt_ci_pr_<n>) and would flag EVERY model as modified — defeating Slim CI.
+            dbt build --select state:modified.body+ --defer --state "$GITHUB_WORKSPACE/prod-state" --target dev
+          else
+            echo "::notice::No prior manifest — full build (first run)"
+            dbt build --target dev
+          fi
+
       - name: Drop ephemeral schema
-        if: always()        # clean up even if the build failed
+        if: always()
         working-directory: ${{ github.workspace }}
         run: |
           python - <<'PY'
@@ -80,7 +109,7 @@ jobs:
       - name: dbt build (staging)
         run: dbt build --target staging
 
-  # ── merge to main, step 2: promote to PROD (only if staging passed) ────────
+  # ── merge to main, step 2: promote to PROD, then publish its manifest ──────
   prod:
     if: github.event_name == 'push'
     needs: staging        # the promotion gate: prod runs only after staging is green
@@ -96,9 +125,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install dbt-bigquery==1.*
+      - run: pip install dbt-bigquery==1.* google-cloud-storage
       - name: Write service account key
         run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
       - run: dbt deps
       - name: dbt build (prod)
         run: dbt build --target prod
+      - name: Publish prod manifest (becomes next PR's Slim CI baseline)
+        working-directory: ${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import os
+          from google.cloud import storage
+          c = storage.Client(project=os.environ["GCP_PROJECT"])
+          c.bucket(os.environ["BUCKET"]).blob(os.environ["STATE_OBJECT"]) \
+           .upload_from_filename("dbt/target/manifest.json")
+          print("published prod manifest to gs://%s/%s" % (os.environ["BUCKET"], os.environ["STATE_OBJECT"]))
+          PY
