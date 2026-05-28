@@ -1,0 +1,3 @@
+project_id = "crypto-pipeline-stg-260528"
+region     = "us-central1"
+location   = "US"

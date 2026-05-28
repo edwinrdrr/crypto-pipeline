@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+project_id = "crypto-pipeline-dev-260528"
+region     = "us-central1"
+location   = "US"

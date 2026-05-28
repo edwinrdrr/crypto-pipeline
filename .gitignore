@@ -22,10 +22,15 @@ dbt/.user.yml          # machine-specific anonymous id
 # Airflow (local) runtime — secrets (gcp-key.json, .env) already covered above
 airflow/logs/
 
-# Terraform
-terraform/.terraform/
-*.tfstate
-*.tfstate.*
-terraform.tfvars
+# Terraform (recursive — multi-env layout)
+# NOTE: .terraform.lock.hcl IS committed on purpose (pins provider versions per env).
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/terraform.tfvars
+crash.log
+crash.*.log
+
+# Other credentials
 *-key.json
 sa-key.json
