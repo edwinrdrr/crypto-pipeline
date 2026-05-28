@@ -112,3 +112,27 @@ engineering, using the `crypto-pipeline` project (CoinGecko → GCS → BigQuery
   (`scheduled-dbt.yml`, every 6h) for the real 24/7 prod transform. Hit local-Airflow gotchas: root-owned
   `logs/` (logging handler error), overriding the image entrypoint broke `getuser()`, port 8080 taken → 8088.
   **All 4 learning-path steps done.** 🎉
+- 2026-05-28: **Level-3 refactor.** Realised the project's GCS bucket wasn't per-env (a
+  pragmatic Level-1 shortcut, not real-world). Refactored to project-per-env with WIF +
+  GitHub Environments + remote Terraform state. 7 PRs:
+  - PR #26 — Terraform: split into `modules/{data-project,wif}` + `envs/{dev,staging,prod,infra}`.
+  - PR B (no-PR, action) — secret-history sweep + flipped repo public (unlocks unlimited
+    Actions minutes + free required reviewers on Environments).
+  - PR #27 — `bootstrap.sh` rewritten as multi-project orchestrator; ran it to provision
+    `crypto-pipeline-{infra,dev,stg,prod}-260528`. Hit 3 real cloud gotchas, each baked into
+    the script: (1) billing-account quota of 5 linked projects (Google forced us to delete the
+    abandoned `project-33e97a73-...` and the old `crypto-pipeline-260527-18241`); (2) ADC
+    quota project was still pointing at the deleted project → API calls failed; (3)
+    `gh repo view --json id` returns the GraphQL node id, not the numeric `repository_id`
+    WIF needs (use `gh api repos/o/n --jq .id`).
+  - PR #28 — dbt/ingestion/CI to WIF (keyless) + GitHub Environments per env + required
+    reviewer on `production`. Verified end-to-end: pr-ephemeral built ephemeral schema in
+    dev project via WIF, dropped it; merge ran staging job, then prod job paused for my
+    approval, then ran; prod manifest republished to the shared ci-state bucket.
+  - PR #29 — `ingestion/deploy.sh` env-aware (staging PAUSED, prod every 5 min); deployed to
+    staging + prod and verified the function runs in both. Also fixed a `bash` parse error
+    caused by an apostrophe in "env's" inside a `${VAR:?...}` message.
+  - PR F (in PR #27) — old project torn down early (DELETE_REQUESTED, recoverable 30 days).
+  - PR G — `terraform-ci.yml` (plan-on-PR via `tf-runner` SA, posted as PR comment) + this
+    log entry + README rewrite + `setup/environments.md` rewrite.
+  **Status: Level-3 real-world architecture, ~$0/year.**

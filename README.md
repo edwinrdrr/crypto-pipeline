@@ -1,572 +1,170 @@
-# Crypto Data Pipeline (learning project)
+# Crypto Data Pipeline (Level-3 multi-project, learning project)
 
-A free-tier data engineering pipeline on Google Cloud:
+A free-tier data engineering pipeline on Google Cloud built to learn **real-world
+environments, CI/CD, and cloud** end-to-end. **Architecturally complete** — uses the
+real-world project-per-environment isolation pattern, Workload Identity Federation
+(keyless auth), GitHub Environments with a required-reviewer gate on prod, multi-env
+Terraform with remote state, and Slim CI.
 
 ```
 CoinGecko API  →  Cloud Storage (raw)  →  BigQuery (raw)  →  dbt (transform)
    Extract            Land                  Load              Transform
-            \____________ every 5 min via Cloud Scheduler ____________/
+
+per env: prod every 5 min · staging on-demand (paused scheduler) · dev local-only
 ```
 
-Goal: learn **environments (dev/prod), CI/CD, and cloud** end-to-end at **~$0/month**.
+## Live architecture
 
-## Cost guardrails (do these FIRST)
+**4 GCP projects** (one per env + shared infra):
 
-1. **Set a budget alert** — `$5`, alert at 50% / 90% / 100% (emails you before any surprise).
-   See setup **§1b** for the exact CLI command (or do it in Console → Billing → Budgets & alerts).
-2. **Never enable Cloud Composer / Dataflow / large clusters** — those are the only
-   things that cost real money. We run Airflow locally instead (later step).
-3. Use **batch loads** (this code does) — they're free. Avoid streaming inserts.
+| Project | Holds |
+|---------|-------|
+| `crypto-pipeline-infra-260528` | **tfstate** bucket (versioned), **ci-state** bucket (Slim CI manifest), **WIF pool + provider**, **tf-runner** SA |
+| `crypto-pipeline-dev-260528` | `crypto-raw` bucket, `crypto_raw` + `crypto_analytics` datasets, `dbt-ci@` SA — *no deployed function (local-only ingestion)* |
+| `crypto-pipeline-stg-260528` | same + `crypto-ingest-fn` + `crypto-scheduler` SAs + Cloud Function + Scheduler (every 6h, **PAUSED**; operators trigger) |
+| `crypto-pipeline-prod-260528` | same + Cloud Function + Scheduler (every 5 min, **ENABLED**) |
 
-Expected cost for this project: **$0** (well within Always Free + the $300 credit).
+**WIF provider** (`workload_identity_provider` in workflows):  
+`projects/101866768306/locations/global/workloadIdentityPools/github-actions/providers/github`
 
-### Cost projection — running the 5-min pipeline 24/7 for a full year
+**GitHub Environments** (per-env-scoped secrets + protection):
+- `dev` — used by `pr-ephemeral` (Slim CI builds into dev project)
+- `staging` — used by the `staging` job on merge
+- `production` — **required-reviewer rule** (manual approval before prod deploy)
 
-**Bottom line: ~$0–$0.50/year.** At 105,120 runs/year, everything stays inside the
-Always Free tier; the only thing that can register at all is GCS write operations.
+## How config flows through the layers
 
-| Component | Yearly usage | Free tier | Cost |
-|-----------|--------------|-----------|------|
-| Cloud Scheduler | 1 job | 3 jobs free, forever | $0 |
-| Cloud Function (invocations) | 105,120/yr | 2M/month free | $0 |
-| Cloud Function (compute) | ~4k vCPU-sec + 6k GiB-sec/mo | 180k vCPU-sec + 360k GiB-sec/mo | $0 |
-| BigQuery load jobs | 105,120 loads/yr | batch loads always free | $0 |
-| BigQuery storage | ~24 MB/yr (measured: 57 B/row) | 10 GB free | $0 |
-| BigQuery queries | none recurring (dbt runs only in CI) | 1 TB/mo free | $0 |
-| Cloud Storage (storage) | ~9 MB (30-day auto-delete) | tiny | ~$0 |
-| Cloud Storage (write ops) | ~8,640 Class-A/mo | 5,000/mo free* | ~$0–0.04/mo |
+```
+Local (laptop) ────►  .env  ────►  dbt/ingestion target DEV project (DBT_TARGET=dev)
+GitHub Actions ────► Environment env: + secrets ────► dbt-ci@<env-project> via WIF
+Cloud Function ────► --set-env-vars baked at deploy ────► runs as crypto-ingest-fn@<env>
+Terraform     ────► terraform.tfvars (per env folder)  ────► remote state in infra bucket
+```
 
-Two things keep it this cheap (both already built in): **batch loads** (free regardless of
-frequency) and the **30-day GCS lifecycle rule** (Terraform) so raw files never accumulate.
+`.env` (laptop, gitignored) is the **only** place secrets-adjacent local config lives. CI and
+the deployed function inject their config differently — see `docs/setup/environments.md`.
 
-> **Accuracy / caveats (be honest with future-you):**
-> - Based on GCP pricing knowledge (≈Jan 2026), **not** verified against live pricing pages or
->   the actual billing console. The BigQuery storage input *was* measured against the real table.
-> - \* The always-free GCS operations allowance (5,000 Class-A/mo) is **region-specific**
->   (us-east1/west1/central1). Our bucket is **multi-region `US`**, which may not qualify — in
->   that case all ~8,640 writes/mo are billable → **~$0.50/year** (the realistic ceiling).
-> - Want literal $0? Batch several coins into fewer files, or drop to every 15 min. Not worth it
->   for ~$0.30/yr. The $5 budget alert (§1b) will catch anything unexpected regardless.
+## Reproduce from scratch (real cost: ~$0/year)
 
-## Reproduce from scratch (the fast path)
-
-Three scripts in `scripts/` make a full rebuild near-one-command. The detailed manual
-steps below (§0–§2) are what these scripts automate — read them to understand, run the
-scripts to go fast.
+You need: `gcloud`, `terraform`, `dbt-bigquery` (in `.venv`), `gh`, a billing account.
+With **5 billing-link slots** free on your GCP billing account, plus interactive auth done:
 
 ```bash
-# 1. Install pinned tools (gcloud, terraform 1.9.8, dbt venv, gh check) — once per machine
+# 0. install pinned tools (~10 min, idempotent)
 ./scripts/install-tools.sh
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
 
-# 2. Authenticate (interactive — only you can do these)
-gcloud auth login && gcloud auth application-default login
-gh auth login
+# 1. authenticate (browser)
+gcloud auth login && gcloud auth application-default login && gh auth login
 
-# 3. Build EVERYTHING on a fresh project (idempotent; safe to re-run)
-PROJECT_ID="crypto-pipeline-$(date +%y%m%d)-$RANDOM" \
-BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX \
-./scripts/bootstrap.sh
-```
-`bootstrap.sh` runs all 8 phases in order: project + billing + APIs → budget → Terraform
-(bucket + 5 datasets) → seed raw tables → GitHub repo → CI service account + secrets →
-deploy Cloud Function + Scheduler → verify rows landed. Every gotcha-fix is baked in.
+# 2. provision 4 projects + tfstate + WIF + everything (~10 min)
+BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX ./scripts/bootstrap.sh
 
-Tear down to rebuild clean: `PROJECT_ID=... ./scripts/teardown.sh`.
+# 3. seed raw tables (one row each, so dbt source() resolves)
+cp .env.example .env && set -a && source .env && set +a
+.venv/bin/python ingestion/main.py                                # dev project
+GCP_PROJECT=$GCP_PROJECT_STAGING RAW_BUCKET=$GCP_PROJECT_STAGING-crypto-raw \
+   .venv/bin/python ingestion/main.py                              # staging
+GCP_PROJECT=$GCP_PROJECT_PROD    RAW_BUCKET=$GCP_PROJECT_PROD-crypto-raw \
+   .venv/bin/python ingestion/main.py                              # prod
 
-> **What "reproducible" means here (honest scope):**
-> - ✅ **Identical** infrastructure, datasets, pipeline logic, CI/CD, and final wiring.
-> - 🔁 The **project id** differs each run (must be globally unique — it's parameterized).
-> - 📈 The **data values** differ — it's the live CoinGecko market, so prices/timestamps won't
->   match a previous run. The schema and behaviour are identical; the numbers are fresh.
-> - ⚠️ Tool versions are pinned, but **GCP pricing / free-tier terms can change** over time.
-> - The scripts are syntax- and idempotency-validated; a full end-to-end run needs a fresh project.
+# 4. configure GitHub Environments + per-env secrets + required-reviewer
+#    (see scripts/setup-github-environments.sh — TODO: extract this from bootstrap notes)
 
-## One-time setup
-
-### 0. Install tools
-```bash
-# gcloud CLI — non-interactive install into your home dir (no sudo needed)
-cd ~
-curl -sSL -o gcloud-cli.tar.gz \
-  https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz
-tar -xzf gcloud-cli.tar.gz && rm gcloud-cli.tar.gz
-./google-cloud-sdk/install.sh --quiet --path-update=true
-exec -l $SHELL          # reload shell so `gcloud`/`bq` are on PATH
-
-# dbt — in a project-level virtualenv (dbt-bigquery pulls in dbt-core)
-cd ~/Documents/learning/crypto-pipeline
-python3 -m venv .venv && source .venv/bin/activate
-pip install dbt-bigquery
-
-# Terraform — install a recent version into ~/bin
-# (older builds like v1.6.0 fail with an "openpgp: key expired" GPG error)
-mkdir -p ~/bin && cd ~
-curl -sSL -o tf.zip https://releases.hashicorp.com/terraform/1.9.8/terraform_1.9.8_linux_amd64.zip
-unzip -oq tf.zip terraform -d ~/bin && rm tf.zip
-export PATH="$HOME/bin:$PATH"   # add to ~/.bashrc to make permanent
-terraform version
-```
-> `gh` (GitHub CLI) is also required for the CI/CD steps — install from https://cli.github.com
-> and run `gh auth login` once.
-
-### 1. GCP auth + a fresh dedicated project
-```bash
-gcloud auth login                              # user account (for gcloud/bq)
-gcloud auth application-default login          # ADC (for Terraform + local dbt)
-
-# Find your billing account id
-gcloud billing accounts list
-
-# Create a fresh project so this stays isolated + easy to delete later
-PROJECT_ID="crypto-pipeline-$(date +%y%m%d)-$RANDOM"
-gcloud projects create "$PROJECT_ID" --name="crypto-pipeline-learn"
-gcloud billing projects link "$PROJECT_ID" --billing-account=YOUR_BILLING_ACCOUNT_ID
-gcloud config set project "$PROJECT_ID"
-gcloud auth application-default set-quota-project "$PROJECT_ID"   # avoids quota warnings
-
-# Enable ALL the APIs this project uses (the gen2 function needs cloudbuild,
-# artifactregistry and eventarc too — easy to miss and the deploy fails without them)
-gcloud services enable \
-    storage.googleapis.com bigquery.googleapis.com \
-    cloudfunctions.googleapis.com cloudscheduler.googleapis.com run.googleapis.com \
-    cloudbuild.googleapis.com artifactregistry.googleapis.com eventarc.googleapis.com \
-    billingbudgets.googleapis.com
+# 5. deploy the function (env-aware: staging PAUSED, prod every 5 min)
+ENV=staging PROJECT_ID=$GCP_PROJECT_STAGING ./ingestion/deploy.sh
+ENV=prod    PROJECT_ID=$GCP_PROJECT_PROD    ./ingestion/deploy.sh
 ```
 
-### 1b. Set a $5 budget alert (do this before provisioning)
-```bash
-BILLING_ACCOUNT_ID=YOUR_BILLING_ACCOUNT_ID    # from `gcloud billing accounts list`
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+> **Cost guardrail**: every project has a budget alert at ~$5 in your account's native
+> currency. Total realistic cost across all 4 projects: ~$0/year (within Always Free).
+> Largest single risk: don't enable Cloud Composer.
 
-# NOTE: the amount currency MUST match your billing account's currency.
-# If your account is USD use `--budget-amount=5USD`. If it's another currency
-# (e.g. IDR), OMIT the currency and pass the native amount (80000 IDR ≈ $5),
-# otherwise you get `INVALID_ARGUMENT`.
-gcloud billing budgets create \
-  --billing-account="$BILLING_ACCOUNT_ID" \
-  --display-name="crypto-pipeline-learn (~\$5)" \
-  --budget-amount=80000 \
-  --threshold-rule=percent=0.5 \
-  --threshold-rule=percent=0.9 \
-  --threshold-rule=percent=1.0 \
-  --filter-projects="projects/$PROJECT_NUMBER"
-```
-> **Note on cost / free trial:** this pipeline lives inside the **Always Free tier**
-> (BigQuery 1 TB queries + 10 GB storage, GCS 5 GB, Cloud Functions, Scheduler), which
-> never expires. So it costs ~$0/month even if your $300 trial credit is gone. The credit
-> is just a buffer for anything beyond free — which we deliberately avoid.
-
-### 2. Create the bucket + datasets with Terraform (Infrastructure as Code)
-```bash
-cd ../terraform
-cp terraform.tfvars.example terraform.tfvars   # edit: set your project_id
-terraform init
-terraform apply        # creates the bucket + 5 datasets
-```
-This provisions all your **environments** reproducibly:
-`crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics`.
-(Per-PR `dbt_ci_pr_<n>` schemas are created/dropped by CI on the fly — not managed here.)
-
-> Prefer manual setup to learn the primitives first? The equivalent commands are:
-> ```bash
-> gcloud storage buckets create gs://$PROJECT_ID-crypto-raw --location=US
-> bq --location=US mk --dataset $PROJECT_ID:crypto_raw_dev
-> bq --location=US mk --dataset $PROJECT_ID:crypto_raw
-> bq --location=US mk --dataset $PROJECT_ID:crypto_analytics_dev
-> bq --location=US mk --dataset $PROJECT_ID:crypto_analytics_staging
-> bq --location=US mk --dataset $PROJECT_ID:crypto_analytics
-> ```
-
-## Local config: one `.env` (do this once)
-
-All local commands read their env vars from a single gitignored `.env`. Set it up once,
-load it each shell — **no manual `export`s anywhere**:
-```bash
-cd ~/Documents/learning/crypto-pipeline
-source .venv/bin/activate
-cp .env.example .env               # first time; edit GCP_PROJECT if yours differs
-set -a && source .env && set +a    # load it (run from the repo root)
-```
-> `.env` only sets vars on your laptop and points local runs at **dev**. CI/cloud inject the
-> same vars themselves. Config only — secrets go in GitHub Secrets / a secret manager.
-
-## Run the ingestion locally
-
-```bash
-python ingestion/main.py           # uses GCP_PROJECT / RAW_BUCKET / BQ_DATASET from .env (dev)
-```
-You should see a raw `.jsonl` file appear in the bucket and rows land in
-`crypto_raw_dev.prices`. Run it a few times — each run appends a new time-series snapshot.
-
-Inspect in BigQuery:
-```sql
-SELECT coin, price_usd, ingested_at
-FROM `YOUR_PROJECT_ID.crypto_raw_dev.prices`
-ORDER BY ingested_at DESC
-LIMIT 20;
-```
-
-## Transform with dbt
-
-```bash
-cd dbt
-dbt deps                    # install dbt_utils
-dbt build                   # runs models + tests against DEV (target/datasets from .env)
-dbt build --target prod     # build the PROD analytics dataset
-```
-(All the `DBT_*` / `RAW_DATASET` vars come from `.env` — nothing to export by hand.)
-What the models do:
-- `stg_crypto__prices` — cleans/types the raw snapshots (a **view**, free to maintain)
-- `fct_crypto_prices` — **incremental + partitioned** time-series fact; each run only
-  processes new rows, adds price-change-since-previous-poll. Stays in the free 1 TB.
-
-## Deploy the every-5-min automation
-
-```bash
-cd ../ingestion
-PROJECT_ID=$PROJECT_ID ./deploy.sh
-```
-`deploy.sh` sets up **two** service accounts (this is the part that's easy to get wrong):
-
-1. **`crypto-ingest-fn`** — the function's *runtime* identity, with `bigquery.dataEditor`,
-   `bigquery.jobUser`, and `storage.objectAdmin` on the bucket. ⚠️ **Do not** rely on the
-   default compute SA — on new projects it has no permissions, so the function deploys
-   fine but **fails silently at runtime** (no rows land, often no error in logs).
-2. **`crypto-scheduler`** — the identity Cloud Scheduler uses to invoke the private
-   function (granted `run.invoker`), via an OIDC token.
-
-It deploys the gen2 **Cloud Function** (`ingest`) and a **Cloud Scheduler** job (`*/5 * * * *`).
-
-**Verify it actually works** (don't trust "deployed" — trust rows landing):
-```bash
-gcloud scheduler jobs run crypto-ingest-5min --location=us-central1   # force a run now
-# then confirm a NEW snapshot appears (count should grow each run):
-bq query --use_legacy_sql=false \
-  'SELECT COUNT(DISTINCT ingested_at) FROM `'"$PROJECT_ID"'.crypto_raw.prices`'
-# pause / resume the schedule any time:
-gcloud scheduler jobs pause  crypto-ingest-5min --location=us-central1
-gcloud scheduler jobs resume crypto-ingest-5min --location=us-central1
-```
-
-## CI/CD (GitHub Actions) — environment-isolated
-
-`.github/workflows/dbt-ci.yml` runs automatically with **per-PR isolation + staged promotion**:
+## Local dev workflow (the loop)
 
 ```
-Pull request ─► pr-ephemeral : SLIM build (only changed models) into dbt_ci_pr_<PR#>,
-                               run tests, then DROP it (if: always)
-Merge to main ─► staging : build + test crypto_analytics_staging
-                  │
-                  └─► prod : (needs: staging) promote → crypto_analytics
-                             then PUBLISH manifest.json to GCS (next PR's baseline)
-```
-
-- **Per-PR ephemeral schema** — each PR builds into its own `dbt_ci_pr_<n>` dataset (set via
-  `DBT_DATASET`), so two open PRs never overwrite each other, and shared dev stays clean. The
-  schema is dropped at the end (even on failure).
-- **Slim CI** — the PR job runs `dbt build --select state:modified.body+ --defer --state <prod>`,
-  so it builds **only the models whose SQL changed** (plus downstream) and **defers** unchanged
-  models to the prod tables instead of rebuilding them. The baseline is the prod `manifest.json`,
-  which the `prod` job uploads to `gs://<bucket>/dbt-state/manifest.json` after each deploy.
-  On a project with hundreds of models this turns a full rebuild into seconds.
-- **Staged promotion** — merging deploys to **staging** first; **prod** only runs if staging is
-  green (`needs: staging`). That's the dev → staging → prod gate.
-- The `generate_schema_name` macro (`dbt/macros/`) makes dbt use each env's dataset name as-is.
-
-> **Why `.body` and not plain `state:modified`?** Plain `modified` also compares each model's
-> *target relation* (schema). Our prod manifest uses `crypto_analytics` but PRs build into
-> `dbt_ci_pr_<n>` — so every model would look "modified" and Slim CI would rebuild everything.
-> `state:modified.body` compares only the compiled SQL, which is what we actually care about.
-
-> **Want a manual approval before prod?** Add a GitHub **Environment** (`environment: production`)
-> with required reviewers on the `prod` job. Note: environment protection rules need a public repo
-> or a paid plan for private repos — otherwise the `needs: staging` gate is your automated stand-in.
-
-Create a CI service account, generate a key, and load the two repo secrets (via the
-`gh` CLI — no clicking needed):
-```bash
-# 1. CI service account with the roles CI needs:
-#    dataEditor (build) + jobUser (run jobs) + dataOwner (drop ephemeral PR datasets)
-gcloud iam service-accounts create dbt-ci --display-name="dbt CI" --project=$PROJECT_ID
-SA="dbt-ci@$PROJECT_ID.iam.gserviceaccount.com"
-for role in roles/bigquery.dataEditor roles/bigquery.jobUser roles/bigquery.dataOwner; do
-  gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$SA" \
-    --role="$role" --condition=None
-done
-# Storage on the bucket so CI can read/write the Slim-CI manifest state
-gcloud storage buckets add-iam-policy-binding gs://$PROJECT_ID-crypto-raw \
-  --member="serviceAccount:$SA" --role=roles/storage.objectAdmin
-
-# 2. Key file (temporary — gitignored)
-gcloud iam service-accounts keys create sa-key.json --iam-account=$SA
-
-# 3. Load secrets into GitHub, then DELETE the local key
-gh secret set GCP_PROJECT --body "$PROJECT_ID"
-gh secret set GCP_SA_KEY < sa-key.json
-rm sa-key.json
-```
-> ⚠️ **Seed the raw tables before CI runs.** dbt's `source('crypto_raw','prices')` fails if
-> the table doesn't exist. Run the ingestion once into **both** `crypto_raw_dev` (for PR/dev
-> CI) and `crypto_raw` (for the merge/prod build) — see "Run the ingestion locally" above,
-> changing `BQ_DATASET` each time.
-
-## Git + CI/CD workflow (the real-world loop)
-
-The day-to-day loop a data engineer runs. Never commit to `main` directly:
-
-```bash
-# 1. Branch off main (your sandbox)
 git checkout main && git pull
-git checkout -b feature/my-change
-
-# 2. Edit a model, commit
-git add -A && git commit -m "Add X metric to fct_crypto_prices"
-
-# 3. Push + open a PR  → CI runs automatically against DEV
-git push -u origin feature/my-change
-gh pr create --fill
-
-# 4. Watch CI; fix anything it catches, push again (CI re-runs on the same PR)
-gh pr checks <PR#>
-gh run view <RUN_ID> --log-failed     # read a failure
-
-# 5. CI green + reviewed → merge → CD builds PROD
-gh pr merge <PR#> --squash --delete-branch
+git checkout -b feature/my-change                         # always branch
+# edit dbt models, run locally against DEV
+set -a && source .env && set +a
+.venv/bin/python ingestion/main.py                        # if you need fresh dev raw
+( cd dbt && dbt build --target dev )                      # writes crypto-pipeline-dev-260528.crypto_analytics
+git push -u origin feature/my-change && gh pr create --fill
+# CI runs: pr-ephemeral builds Slim CI into dbt_ci_pr_<n> in dev project, drops it after
+# review + merge → staging job → prod job (paused for your approval) → manifest republished
 ```
 
-## Orchestration (Step 4)
+## What's in the repo
 
-Three layers, by what actually runs them:
-
-| What | Tool | Runs where | Cost |
-|------|------|-----------|------|
-| **Ingestion** every 5 min | **Cloud Scheduler** → Cloud Function | GCP, 24/7 | free |
-| **Transform** on a schedule | **GitHub Actions cron** (`.github/workflows/scheduled-dbt.yml`) | GitHub, 24/7 | free* |
-| **Learning the orchestrator** | **local Airflow** (`airflow/`) | your machine (dev only) | free |
-
-- **Cloud Scheduler** is a *timer* — fires one trigger, no pipeline logic. Already deployed.
-- **GitHub Actions cron** runs `dbt build --target prod` every 6h — the free, 24/7 way to keep
-  `crypto_analytics` fresh (the gap, since dbt otherwise only runs on merge). *\*Private repos get
-  2,000 free Action-min/mo; every-6h ≈ 240 min/mo. Don't make it hourly (~1,800 min/mo).*
-- **Local Airflow** (`airflow/`) is the real *orchestrator* — a DAG `extract_load → dbt_run →
-  dbt_test` with dependencies, retries, and a UI. It's **dev/learning only** (runs only while your
-  machine + Docker are up); production Airflow means Cloud Composer (~$300+/mo), which we avoid.
-  See `airflow/README.md` to run it locally.
-
-> Why three? A **timer** triggers one thing; a **CI runner** runs a script of steps on a cron; an
-> **orchestrator** runs a *graph* with retries/backfills/observability. You learn the orchestrator
-> locally, but use the free timer + runner for actual 24/7 work at this scale.
-
-Branch = sandbox · `main` = source of truth · merging = promotion to prod.
-
-## Project status
-
-Full pipeline scaffold + git/CI-CD loop:
-
-- [x] **Ingestion** — CoinGecko → GCS → BigQuery (`ingestion/main.py`) — *run manually; works*
-- [x] **dbt** — incremental + partitioned models; dev/staging/prod targets (`dbt/`) — *builds + tests pass*
-- [x] **GitHub Actions** — dbt CI/CD (`.github/workflows/dbt-ci.yml`) — *PR→ephemeral, merge→staging→prod*
-- [x] **Terraform** — bucket + 5 datasets as IaC (`terraform/`) — *applied*
-- [x] **Git repo + PR flow** — branch → PR → CI → merge (repo: `edwinrdrr/crypto-pipeline`)
-- [x] **CI green + first prod merge** — PR #1 merged; new column verified live in `crypto_analytics` ✅
-- [x] **Docs PR** — PR #2 merged (journey log + committed lockfiles)
-- [x] **Cloud Function + Cloud Scheduler** — deployed & verified; runs every 5 min as a
-      dedicated runtime SA, writing to `crypto_raw`. ✅
-- [x] **Step 2: environment isolation** — per-PR ephemeral `dbt_ci_pr_<n>` schemas + `staging` tier;
-      dev→staging→prod promotion (PR #5). ✅
-- [x] **Step 3: Slim CI** — PRs build only changed models (`state:modified.body+ --defer`) against the
-      prod manifest in GCS (PR #8). ✅
-- [x] **Step 4: orchestration** — local Airflow DAG (`extract_load→dbt_run→dbt_test`, verified) for
-      learning the tool + a free GitHub Actions cron (`scheduled-dbt.yml`) for real 24/7 transforms. ✅
-
-## Project layout
 ```
 crypto-pipeline/
-  ingestion/             # Extract + Load: API → GCS → BigQuery
-    main.py              #   the function (runs locally or as Cloud Function)
-    requirements.txt
-    deploy.sh            #   deploy Cloud Function + 5-min Scheduler
-  dbt/                   # Transform: staging views + incremental marts
-    dbt_project.yml
-    profiles.yml         #   dev/staging/prod targets, env-driven auth + dataset
-    packages.yml
-    macros/              #   generate_schema_name.sql (clean per-env / per-PR schemas)
-    models/
-      staging/           #   _crypto__sources.yml, stg_crypto__prices.sql
-      marts/             #   fct_crypto_prices.sql (incremental), mart_latest_prices.sql, _marts.yml
-  terraform/             # Infrastructure as Code: bucket + 5 datasets
-    main.tf  variables.tf  outputs.tf  terraform.tfvars.example
-  .github/workflows/
-    dbt-ci.yml           # CI/CD: PR→ephemeral schema, merge→staging→prod
-    scheduled-dbt.yml    # cron: dbt build --target prod every 6h (free 24/7 transform)
-  airflow/               # Local Airflow (learning the orchestrator; dev only)
-    docker-compose.yaml  #   LocalExecutor + Postgres
-    dags/crypto_pipeline_dag.py   # extract_load → dbt_run → dbt_test
-  scripts/               # Reproducibility
-    install-tools.sh     #   gcloud + terraform + dbt venv + gh (pinned versions)
-    bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
-    teardown.sh          #   delete the project to rebuild clean
-  docs/
-    data-warehouse-setup.md    # lead's new-project runbook (10 phases, scope tags, shared-vs-per-project)
-    start-here-mental-model.md # read first: environments=cloud DBs, what push/CI-CD really do
-    walkthrough-one-change.md  # real recorded run: one change traced dev→staging→prod
-    environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
-    howto-playbook.md          # operator's playbook: how to use it day-to-day (recipes)
-    faq.md                     # every question we worked through, answered crisply
-    dashboard.md               # free Looker Studio dashboard (+ make it public)
-    alerts.md                  # free monitoring/notifications when the pipeline breaks
+├── terraform/
+│   ├── modules/
+│   │   ├── data-project/        # reusable: bucket + datasets + SAs + IAM + labels
+│   │   └── wif/                 # WIF pool + OIDC provider + SA impersonation
+│   └── envs/
+│       ├── dev/                 # data-project (deploy_function=false)
+│       ├── staging/             # data-project (deploy_function=true)
+│       ├── prod/                # data-project (deploy_function=true)
+│       └── infra/               # tfstate bucket + ci-state bucket + WIF + tf-runner SA
+├── dbt/
+│   ├── profiles.yml             # per-target `project: env_var('GCP_PROJECT_<ENV>')`
+│   ├── macros/generate_schema_name.sql  # dbt-recommended pattern (target.name conditional)
+│   └── models/                  # staging view + incremental mart + latest-prices view
+├── ingestion/
+│   ├── main.py                  # CoinGecko -> GCS -> BigQuery (env-driven)
+│   └── deploy.sh                # ENV-aware: staging PAUSED, prod every 5 min
+├── .github/workflows/
+│   ├── dbt-ci.yml               # WIF + Environments: dev (Slim CI) → staging → prod
+│   ├── scheduled-dbt.yml        # cron every 6h, prod refresh, required-reviewer
+│   └── terraform-ci.yml         # plan-on-PR per env, posted as PR comment
+├── scripts/
+│   ├── install-tools.sh         # pinned versions
+│   ├── bootstrap.sh             # multi-project orchestrator (idempotent)
+│   └── teardown.sh              # delete projects (recoverable for 30 days)
+├── airflow/                     # local Airflow (dev/learning only)
+├── docs/                        # see the doc set below
+├── .env.example                 # local config — copy to .env
+├── README.md                    # this file
+├── LEARNING.md                  # dated journey log
+└── CLAUDE.md                    # quick command reference
 ```
 
 ## Companion docs
 
-- **`docs/data-warehouse-setup.md`** — the **lead's new-project runbook**: 10 phases (org → project
-  → environments → repo → SAs/secrets → dbt → CI/CD → orchestration → observability → docs),
-  each tagged by scope (org-once / project-once / per-env / per-dev). Answers "do I create
-  the CI service account once for the company or per project?" (per project).
-- **`docs/start-here-mental-model.md`** — read this FIRST. Untangles the core confusion from
-  zero: environments are *cloud databases*, "local" is just your laptop, and what `git push` /
-  CI/CD actually do (branch→dev, merge→staging→prod). Grounded in a real trace from this repo.
-- **`docs/environments-and-cicd.md`** — the concept guide: *why* environments, CI/CD, cloud,
-  and orchestration work the way they do, grounded in this project.
-- **`docs/walkthrough-one-change.md`** — a *real recorded run* (PR #16) tracing one tiny change
-  through dev → staging → prod, annotating at each step where it ran vs which database it touched.
-- **`docs/howto-playbook.md`** — the operator's playbook: *how to actually use it* day-to-day
-  (ship a change, add a model/test, debug a red CI, backfill, roll back). Copy-paste recipes.
-- **`docs/faq.md`** — every question from building this project, answered crisply: environments,
-  push/CI-CD, config vs secrets / `.env`, cost, architecture, orchestration.
-- **`docs/dashboard.md`** — put a free Looker Studio dashboard on top, incl. making it public for
-  a portfolio.
-- **`docs/alerts.md`** — free monitoring/notifications when the pipeline breaks (GitHub failure
-  emails, dbt source freshness, Cloud Monitoring, Slack/Discord webhooks).
-- **`CLAUDE.md`** — quickstart cheat-sheet: env vars, common commands, the CI service-account
-  recipe, cost rules, and gotchas. Read this when you sit back down to work.
-- **`LEARNING.md`** — the learning tracker: concepts (stages/CI-CD/cloud), the staged learning
-  path (git flow → isolation → Slim CI → orchestration), vocabulary, and a dated log.
+| Doc | Read when |
+|-----|-----------|
+| **`docs/start-here-mental-model.md`** | first read — what environments, push, CI/CD actually mean |
+| **`docs/walkthrough-one-change.md`** | a real recorded trace of one change dev→staging→prod |
+| **`docs/faq.md`** | the consolidated Q&A (every question we worked through) |
+| **`docs/environments-and-cicd.md`** | the conceptual deep-dive |
+| **`docs/howto-playbook.md`** | day-to-day task recipes |
+| **`docs/setup/environments.md`** | how to set up and use environments — practical (Level 3) |
+| **`docs/dashboard.md`** | put a free Looker Studio dashboard on top |
+| **`docs/alerts.md`** | free monitoring + notifications when the pipeline breaks |
+| **`docs/data-warehouse-setup.md`** | lead's phased new-project runbook |
 
-## What we actually did, in order (the real journey log)
+> ⚠️ Some of the deeper docs were written against the earlier Level-1 single-project setup
+> and reference the old project id `crypto-pipeline-260527-18241` (deleted in PR F) and
+> dataset names like `crypto_analytics_dev`. The **architectural patterns** still apply, but
+> for the concrete current state always read **this README** + **`docs/setup/environments.md`**.
 
-The true chronological sequence of this session — not an idealized order:
+## What's running right now
 
-1. **Learned the concepts first (no code)** — what dev/test/staging/prod environments are,
-   how CI/CD promotes code through them, how cloud + the GCP free tier make it ~$0, and the
-   config-vs-secrets rule. (See `LEARNING.md` for the write-up.)
-2. **Chose the design** — CoinGecko API, and the **ELT-via-Cloud-Storage** pattern
-   (API → GCS raw → BigQuery → dbt) rather than loading the API straight into BigQuery.
-3. **Built the ingestion first** — `ingestion/main.py` (+ `requirements.txt`, `.gitignore`,
-   first `README`).
-4. **Built the rest of the pipeline** — dbt project (`dbt/`), Cloud Function + Scheduler
-   deploy (`ingestion/deploy.sh`), GitHub Actions CI/CD (`.github/workflows/`), Terraform (`terraform/`).
-5. **Wrote `CLAUDE.md`** — the quickstart cheat-sheet.
-6. **Detoured into theory** — secrets/`.env` vs secret managers, then how stages + CI/CD work
-   in real-world DE. Created **`LEARNING.md`** as the tracker.
-7. **Started the git + PR loop** — `git init -b main`, first commit, a feature branch
-   (`feature/add-price-change-pct`), changed a model, committed.
-8. **Cleaned history + published** — stripped the `Co-Authored-By` trailer from all commits,
-   created a **private** GitHub repo, pushed `main`, then pushed the branch and opened **PR #1**.
-9. **CI ran and caught a real bug** 💡 — first run failed because `dbt-utils` was wrongly in the
-   `pip install` line, but it's a **dbt package** (from `packages.yml` via `dbt deps`), not PyPI.
-   Fixed it on the branch, pushed → CI re-ran and got further, then failed at `dbt build`
-   because **no GCP secrets existed yet**. 💡 Lesson: a red PR is a gate — you don't merge it.
-10. **Decided to do GCP properly** → only *then* installed tooling: gcloud CLI (home-dir
-    tarball) + `dbt-bigquery` in `.venv`.
-11. **Authenticated** — `gcloud auth login` + `application-default login` (as `edwinrdrr@gmail.com`).
-12. **Created a fresh dedicated project** — `crypto-pipeline-260527-18241`, linked billing,
-    set it active + set the ADC quota project.
-13. **Provisioned GCP** — created the **$5 budget** (project-scoped), enabled APIs,
-    `terraform apply` → bucket + 4 datasets.
-14. **Wired CI auth** — created the `dbt-ci` service account (BigQuery dataEditor + jobUser),
-    generated a key, loaded `GCP_PROJECT` + `GCP_SA_KEY` as GitHub secrets, then **deleted the
-    local key file** (it only lives in GitHub now).
-15. **Seeded raw data** — ran ingestion once into `crypto_raw_dev` *and* `crypto_raw` (prod)
-    so dbt's `source()` had a table to read.
-16. **Closed the loop** 🎉 — re-ran CI on PR #1 → **GREEN** → merged (squash) → CD built prod →
-    verified `price_change_pct_since_prev` is live in `crypto_analytics.fct_crypto_prices`.
-17. **Documented it all via PR #2** — wrote this journey log + committed the dbt and Terraform
-    **lockfiles** (gitignored the machine-specific `dbt/.user.yml`). CI ran again (because the PR
-    touched `dbt/**`) → green → merged.
-18. **Deployed the 5-min automation** — ran `deploy.sh`: gen2 Cloud Function `crypto-ingest`
-    + Cloud Scheduler `crypto-ingest-5min` (`*/5 * * * *`).
-19. **Hit + fixed the runtime-SA gap** 💡 — the function deployed but wrote **no rows**: it ran as
-    the **default compute SA**, which on a new project has **no permissions** (and failed silently).
-    Fix: created a dedicated **`crypto-ingest-fn`** runtime SA (BigQuery + bucket Storage roles),
-    pointed the function at it, force-ran the scheduler, and **verified a new snapshot landed**.
-    Updated `deploy.sh` so this is automatic next time. (Steps 18–19 shipped as **PR #3**, which
-    also completed the "document every setup step" gap-fill across the README.)
-20. **Added a cost projection** (PR #4) — ~$0–0.50/yr running 24/7; measured row size against the
-    real table; documented the multi-region GCS free-ops caveat.
-21. **Step 2: environment isolation** (PR #5) — added the `generate_schema_name` macro + env-driven
-    `DBT_DATASET`, a `crypto_analytics_staging` dataset, and a **dev(ephemeral)→staging→prod** CI/CD.
-    Verified: PR #5 built into `dbt_ci_pr_5` then **dropped** it; the merge built **staging** then
-    promoted to **prod** (the `prod` job `needs: staging`). 💡 Lesson: per-PR schemas isolate
-    concurrent work; a staging gate catches bad data before prod.
-22. **Reproducibility scripts** (PR #7) — added `scripts/install-tools.sh`, `bootstrap.sh`
-    (idempotent, all 8 phases with the gotcha-fixes baked in), and `teardown.sh`, so a future
-    rebuild is auth + one command. Validated idempotency-detection against the live project.
-23. **Step 3: Slim CI** (PR #8) — prod publishes its `manifest.json` to GCS; PRs build
-    `state:modified.body+ --defer`. Demonstrated: changing only the mart built **just
-    `fct_crypto_prices`** (1 model, 5 tasks) and deferred the unchanged staging view —
-    vs. a full build (2 models, 8 tasks). 💡 First tried plain `state:modified+` and it
-    rebuilt everything (the cross-env relation false-positive — see gotchas).
-24. **Fixed incremental schema evolution** (PR #9) — `price_direction` didn't reach prod
-    because the incremental mart defaulted to `on_schema_change='ignore'`. Set it to
-    `append_new_columns`; hit two more parse bugs along the way (SQL `--` and a stray `#}`
-    inside the config-block comment — both caught by CI/local compile), then verified the
-    column landed in prod.
-25. **Step 4: orchestration** — stood up **local Airflow** (docker-compose, LocalExecutor) and a
-    DAG `extract_load → dbt_run → dbt_test`. Verified: the `@hourly` run succeeded on its own, and a
-    manual run's `dbt_run` hit a BigQuery concurrency conflict (two runs, same dev table) and
-    **auto-retried to success** — orchestration earning its keep. Added a free **GitHub Actions cron**
-    (`scheduled-dbt.yml`, every 6h) for the real 24/7 transform. 💡 Lesson: local Airflow is for
-    *learning/dev*; for $0 always-on scheduling use Cloud Scheduler (ingest) + Actions cron (transform).
+- **Prod Cloud Function** ingests CoinGecko prices every 5 min into `crypto-pipeline-prod-260528.crypto_raw.prices`.
+- **Scheduled dbt** workflow refreshes prod analytics every 6h (paused for required-reviewer approval).
+- **No 5-min ingestion in dev or staging** by design.
 
-### Gotchas we hit (so future-you doesn't lose time)
+## Status
 
-- **Budget currency must match the billing account.** The account is **IDR**, so `--budget-amount=5USD`
-  failed with `INVALID_ARGUMENT`. Fix: omit the currency (`--budget-amount=80000`) so it uses the
-  account's native currency (80,000 IDR ≈ $5).
-- **Terraform v1.6.0 had a GPG "key expired" error** installing the google provider. Fix: use a
-  newer Terraform — we put **v1.9.8 in `~/bin/terraform`** (the stock `/usr/local/bin/terraform` is old).
-- **`bq` needs `gcloud` on PATH** — run `export PATH="$HOME/google-cloud-sdk/bin:$PATH"` first.
-- **Seed the raw table before CI runs** — dbt fails if `source('crypto_raw','prices')` doesn't exist yet.
-- **gen2 Cloud Functions need extra APIs** — `cloudbuild`, `artifactregistry`, `eventarc` (beyond
-  the obvious `cloudfunctions`/`run`); the deploy fails without them.
-- **Don't trust "deployed" — trust rows landing.** The default compute SA made the function deploy
-  successfully but fail at runtime with no error. Always verify with a forced run + row count.
-- **Slim CI: use `state:modified.body+`, not plain `state:modified+`.** Plain `modified` compares the
-  target relation (schema) too; with ephemeral PR schemas vs prod, *every* model looks modified and
-  Slim CI rebuilds everything. `.body` compares the compiled SQL only.
-- **Incremental models default to `on_schema_change='ignore'`** — new columns silently never reach an
-  already-built table. Set `on_schema_change='append_new_columns'` (or `--full-refresh`).
-- **Inside/around a `{{ config() }}` block, comments must be Jinja `{# ... #}`, not SQL `--`** — and
-  don't put the characters that close a Jinja comment *inside* one, or it ends early and leaks SQL.
-- **Local Airflow with a custom UID**: (1) Docker creates `./logs` as root → "Unable to configure
-  handler 'processor'"; pre-create `logs/` owned by your uid. (2) Don't override the image
-  `entrypoint` — it sets up a valid user for arbitrary UIDs (else `getuser()` fails); use the
-  `_AIRFLOW_DB_MIGRATE`/`_AIRFLOW_WWW_USER_*` env vars instead. (3) Port 8080 is often taken — we use 8088.
-- **GitHub Actions cron on a private repo isn't unlimited** — 2,000 free min/mo; keep the schedule
-  modest (we use every 6h, not hourly). Scheduled runs also need the workflow on the default branch.
-
-### Live project facts (this run)
-
-| Thing | Value |
+| Layer | State |
 |-------|-------|
-| GCP project | `crypto-pipeline-260527-18241` |
-| GitHub repo | `edwinrdrr/crypto-pipeline` (private) |
-| Bucket | `crypto-pipeline-260527-18241-crypto-raw` |
-| Datasets | `crypto_raw_dev`, `crypto_raw`, `crypto_analytics_dev`, `crypto_analytics_staging`, `crypto_analytics` (+ ephemeral `dbt_ci_pr_<n>`) |
-| Slim CI state | `gs://crypto-pipeline-260527-18241-crypto-raw/dbt-state/manifest.json` |
-| CI service account | `dbt-ci@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
-| Function runtime SA | `crypto-ingest-fn@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
-| Scheduler SA | `crypto-scheduler@crypto-pipeline-260527-18241.iam.gserviceaccount.com` |
-| Cloud Function | `crypto-ingest` (gen2, us-central1) |
-| Scheduler job | `crypto-ingest-5min` (`*/5 * * * *`, ENABLED) |
-| Budget | "crypto-pipeline-learn (~$5)" = 80,000 IDR, alerts 50/90/100% |
-
-> **Key ordering insight:** we built *all the code and the entire git/CI loop before touching
-> GCP at all.* That's deliberate — you can develop and let CI catch bugs long before any cloud
-> resources (or costs) exist. Cloud provisioning is the *last* step, not the first.
-
-> **To redo cleanly later:** delete the GCP project (`gcloud projects delete <id>`) and the
-> GitHub repo, then start again from step 7 (the code already exists in this folder). If
-> starting on a new machine, do setup §0 (install tooling) first.
+| 4 GCP projects | provisioned ✅ |
+| WIF (keyless GitHub Actions → GCP) | live ✅ |
+| GitHub Environments (dev, staging, production) | configured, prod has required-reviewer ✅ |
+| Per-env Terraform with remote state | applied ✅ |
+| Cloud Function deployed to staging + prod | done ✅ |
+| Slim CI working (Level-3) | verified by PR #28 merge run ✅ |
+| Old project torn down | deleted (DELETE_REQUESTED, ~30-day recoverable) ✅ |
+| Terraform CI (plan-on-PR) | wired in PR G ✅ |
+| Docs fully synced to Level 3 | README + LEARNING + setup/environments updated; deeper docs scheduled for cleanup |

@@ -131,3 +131,54 @@ output "wif_provider_name" {
   description = "Put this in GitHub workflow as workload_identity_provider:"
   value       = module.wif.provider_name
 }
+
+# ── tf-runner: Terraform-CI SA for plan-on-PR (read-only across envs) ──────
+# Lives in infra. Granted roles/viewer + roles/iam.securityReviewer on each env
+# project so `terraform plan` can read all resource types. WIF impersonation
+# bound to this repository.
+resource "google_service_account" "tf_runner" {
+  project      = var.project_id
+  account_id   = "tf-runner"
+  display_name = "Terraform CI runner (plan-on-PR)"
+}
+
+resource "google_service_account_iam_member" "tf_runner_wif" {
+  service_account_id = google_service_account.tf_runner.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${module.wif.pool_name}/attribute.repository/${var.github_repository}"
+}
+
+locals {
+  tf_runner_target_projects = toset([
+    var.project_id,
+    var.dev_project_id,
+    var.staging_project_id,
+    var.prod_project_id,
+  ])
+  tf_runner_read_roles = [
+    "roles/viewer",
+    "roles/iam.securityReviewer", # read IAM bindings (default viewer can't)
+  ]
+}
+
+resource "google_project_iam_member" "tf_runner_read" {
+  for_each = {
+    for pair in setproduct(tolist(local.tf_runner_target_projects), local.tf_runner_read_roles) :
+    "${pair[0]}/${pair[1]}" => { project = pair[0], role = pair[1] }
+  }
+  project = each.value.project
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.tf_runner.email}"
+}
+
+# Read access on the tfstate bucket so `terraform init` can fetch state.
+resource "google_storage_bucket_iam_member" "tf_runner_state_read" {
+  bucket = google_storage_bucket.tfstate.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.tf_runner.email}"
+}
+
+output "tf_runner_sa_email" {
+  description = "Terraform CI service account (for the terraform-ci.yml workflow)."
+  value       = google_service_account.tf_runner.email
+}

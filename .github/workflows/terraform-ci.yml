@@ -1,0 +1,111 @@
+name: terraform CI
+
+# Plan-on-PR for infra changes. Each env's terraform/envs/<env>/ is planned
+# in parallel and the plan output is posted back as a PR comment so reviewers
+# see what would change before merge.
+#
+# Auto-apply on merge is INTENTIONALLY NOT WIRED. Real-world teams gate apply
+# behind another approval step; for this learning project, applying is done
+# locally from `scripts/bootstrap.sh` or `terraform apply` after review.
+#
+# Auth: WIF impersonates the `tf-runner` SA, which has roles/viewer +
+# roles/iam.securityReviewer on each env project (enough for `plan`).
+
+on:
+  pull_request:
+    paths: ["terraform/**", ".github/workflows/terraform-ci.yml"]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+env:
+  WIF_PROVIDER: projects/101866768306/locations/global/workloadIdentityPools/github-actions/providers/github
+  TF_RUNNER: tf-runner@crypto-pipeline-infra-260528.iam.gserviceaccount.com
+  TF_VERSION: 1.9.8
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [dev, staging, prod, infra]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.TF_RUNNER }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # tfvars are gitignored; recreate the minimal set needed for plan.
+      # (Only project ids — not secrets — and the WIF infra inputs.)
+      - name: write tfvars
+        working-directory: terraform/envs/${{ matrix.env }}
+        env:
+          DEV_PROJECT: crypto-pipeline-dev-260528
+          STAGING_PROJECT: crypto-pipeline-stg-260528
+          PROD_PROJECT: crypto-pipeline-prod-260528
+          INFRA_PROJECT: crypto-pipeline-infra-260528
+          GITHUB_REPO: edwinrdrr/crypto-pipeline
+          REPO_ID: 1251445803
+        run: |
+          case "${{ matrix.env }}" in
+            dev)     PROJECT_ID=$DEV_PROJECT ;;
+            staging) PROJECT_ID=$STAGING_PROJECT ;;
+            prod)    PROJECT_ID=$PROD_PROJECT ;;
+            infra)   PROJECT_ID=$INFRA_PROJECT ;;
+          esac
+          {
+            echo "project_id = \"$PROJECT_ID\""
+            echo "region     = \"us-central1\""
+            echo "location   = \"US\""
+            if [ "${{ matrix.env }}" = "infra" ]; then
+              echo "dev_project_id       = \"$DEV_PROJECT\""
+              echo "staging_project_id   = \"$STAGING_PROJECT\""
+              echo "prod_project_id      = \"$PROD_PROJECT\""
+              echo "github_repository    = \"$GITHUB_REPO\""
+              echo "github_repository_id = \"$REPO_ID\""
+            fi
+          } > terraform.tfvars
+
+      - name: terraform init + plan (${{ matrix.env }})
+        id: tfplan
+        working-directory: terraform/envs/${{ matrix.env }}
+        run: |
+          set -e
+          terraform init -input=false -no-color -lockfile=readonly
+          # plan-only CI: -lock=false skips state-lock acquisition (tf-runner
+          # has read-only access; locking would require write on the bucket).
+          set +e
+          terraform plan -input=false -no-color -lock=false -out=plan.tfplan \
+            -var-file=terraform.tfvars > plan.txt 2>&1
+          plan_exit=$?
+          cat plan.txt
+          exit $plan_exit
+
+      - name: post plan as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          ENV: ${{ matrix.env }}
+        with:
+          script: |
+            const fs = require('fs');
+            const env = process.env.ENV;
+            let plan = '';
+            try { plan = fs.readFileSync(`terraform/envs/${env}/plan.txt`, 'utf8'); }
+            catch (e) { plan = '(no plan output)'; }
+            // Trim very long plans (GitHub comment limit ~65k chars).
+            if (plan.length > 50000) plan = plan.slice(0, 50000) + '\n...[truncated]';
+            const body = `### \`terraform plan\` — \`envs/${env}\`\n\n<details><summary>plan output</summary>\n\n\`\`\`hcl\n${plan}\n\`\`\`\n</details>`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
