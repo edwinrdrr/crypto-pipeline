@@ -1,21 +1,19 @@
-# How to use it — a data engineer's playbook
+# How to use it — a data engineer's playbook (Level 3)
 
-Task-oriented recipes for *operating* this pipeline day-to-day. The concept guide
-(`environments-and-cicd.md`) tells you **why**; this tells you **what to type** for the
-things you actually do. Each recipe is end-to-end and grounded in this project.
+Task-oriented recipes for *operating* this pipeline day-to-day in the
+**4-GCP-project Level-3** setup. The concept guide (`environments-and-cicd.md`) tells you
+**why**; this tells you **what to type** for the things you actually do.
 
 **Assumed setup once per shell** (so commands below "just work"):
 ```bash
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
 cd ~/Documents/learning/crypto-pipeline
-source .venv/bin/activate                              # dbt + python deps
-
-# Local config: copy the template once, then load it each shell (better than re-typing exports).
+source .venv/bin/activate
 cp .env.example .env          # first time only (.env is gitignored)
-set -a && source .env && set +a   # loads GCP_PROJECT, DBT_TARGET=dev, datasets, etc.
+set -a && source .env && set +a
 ```
-> `.env` is a **local convenience** — it just sets the same env vars CI injects via the workflow.
-> Config only; never put secrets (keys) in it. (See `docs/start-here-mental-model.md` FAQ.)
+`.env` sets `GCP_PROJECT_DEV/_STAGING/_PROD`, `DBT_TARGET=dev`, `DBT_METHOD=oauth`,
+`DBT_PROFILES_DIR=$PWD/dbt`, and local ingestion vars pointing at dev.
 
 ---
 
@@ -28,36 +26,38 @@ Every change — a new column, a new model, a fix — follows the same path. Thi
 git checkout main && git pull
 git checkout -b feature/short-description
 
-# 2. make the change (edit dbt/ models), then TEST LOCALLY before pushing (recipe 2)
+# 2. edit dbt/ models. TEST LOCALLY first (recipe 2).
 
 # 3. commit + push + open a PR
 git add -A && git commit -m "Explain the change"
 git push -u origin feature/short-description
 gh pr create --fill
 
-# 4. watch CI (Slim CI builds only what you changed, in a throwaway schema)
+# 4. watch CI
+#    pr-ephemeral runs Slim CI in the DEV project's dbt_ci_pr_<n> schema; drops after.
 gh pr checks <PR#>
-gh run view <RUN_ID> --log-failed     # if red — read it, fix, push again (recipe 6)
 
-# 5. green + reviewed -> merge -> CD builds staging then prod
+# 5. green + reviewed -> merge
 gh pr merge <PR#> --squash --delete-branch
 
-# 6. verify it reached prod (recipe 7)
+# 6. staging job runs (auto); prod job pauses for your approval
+#    See the run in the Actions tab → Review deployments → Approve
+
+# 7. verify the change reached PROD (recipe 7)
 ```
-**Never edit `main` directly. Never merge a red PR.** Those two rules are the whole discipline.
+**Never edit `main` directly. Never merge a red PR. Don't approve prod blindly.**
 
 ---
 
 ## 1. Work in your own dev sandbox (without touching shared dev)
 
-Point dbt at a personal schema so your experiments are isolated:
+Each PR already gets its own ephemeral schema in the dev project (`dbt_ci_pr_<n>`). For
+*local* work, point dbt at a personal schema so experiments don't collide:
 ```bash
 cd dbt
-export DBT_PROFILES_DIR=$PWD DBT_METHOD=oauth RAW_DATASET=crypto_raw_dev
-export DBT_DATASET=dbt_$USER          # your own dataset, e.g. dbt_edwin
-dbt build --target dev                # builds into dbt_edwin.*
+DBT_TARGET=dev DBT_DATASET=dbt_$USER dbt build
+# writes into crypto-pipeline-dev-260528.dbt_$USER instead of crypto_analytics
 ```
-This is the same mechanism CI uses for per-PR schemas (`DBT_DATASET=dbt_ci_pr_<n>`).
 
 ---
 
@@ -65,19 +65,19 @@ This is the same mechanism CI uses for per-PR schemas (`DBT_DATASET=dbt_ci_pr_<n
 
 Catch errors on your machine instead of burning a CI round-trip.
 ```bash
-# (a) ingest once into dev raw
-GCP_PROJECT=$GCP_PROJECT RAW_BUCKET=$GCP_PROJECT-crypto-raw BQ_DATASET=crypto_raw_dev \
-  python ingestion/main.py
+# (a) ingest a fresh batch into the DEV project's crypto_raw
+.venv/bin/python ingestion/main.py
+# uses GCP_PROJECT, RAW_BUCKET, BQ_DATASET from .env (= dev)
 
 # (b) build + test the models against dev
 cd dbt
-export DBT_PROFILES_DIR=$PWD DBT_METHOD=oauth RAW_DATASET=crypto_raw_dev DBT_DATASET=crypto_analytics_dev
 dbt deps
-dbt build --target dev          # = run + test; fails loudly if anything's wrong
+dbt build           # = run + test; against dev (DBT_TARGET from .env)
 ```
-Fast inner-loop checks without hitting the warehouse hard:
+
+Fast inner-loop checks (no warehouse hit):
 ```bash
-dbt parse                       # config/Jinja errors (catches the {{ config() }} comment traps)
+dbt parse                       # config/Jinja errors
 dbt compile --select my_model   # render the SQL; inspect target/compiled/.../my_model.sql
 ```
 
@@ -85,17 +85,12 @@ dbt compile --select my_model   # render the SQL; inspect target/compiled/.../my
 
 ## 3. Add a new dbt model
 
-```bash
-# stage view (cleans a source) or mart (business logic)?  Put it in the right folder:
-#   dbt/models/staging/   or   dbt/models/marts/
-```
-1. Create `dbt/models/marts/my_new_model.sql` — e.g. `select coin, avg(price_usd) ... from {{ ref('fct_crypto_prices') }} group by 1`.
-2. Document + test it in a `_*.yml` (see recipe 4).
-3. Run it: `dbt build --select my_new_model --target dev`.
-4. Ship via the core loop (recipe 0). Slim CI will build *only* this model on the PR.
-
-> Use `{{ ref('other_model') }}` and `{{ source('crypto_raw','prices') }}` — never hard-code
-> table names. That's how dbt knows the dependency graph (and how deferral/Slim CI work).
+1. Choose `dbt/models/staging/` (cleans a source) or `dbt/models/marts/` (business logic).
+2. Create `my_new_model.sql` using `{{ ref('other_model') }}` and
+   `{{ source('crypto_raw', 'prices') }}` — never hard-code table names.
+3. Document + test in a `_*.yml` (see recipe 4).
+4. Build it: `dbt build --select my_new_model --target dev`.
+5. Ship via the core loop (recipe 0). Slim CI will build *only* this model on the PR.
 
 ---
 
@@ -109,20 +104,21 @@ models:
       - name: price_usd
         tests:
           - not_null
-          - dbt_utils.accepted_range:     # e.g. price can't be negative
+          - dbt_utils.accepted_range:
               min_value: 0
 ```
 Run just the tests: `dbt test --select fct_crypto_prices --target dev`.
-A failing test **fails CI** → the PR can't merge. That's the point — bad data is a build break.
+A failing test **fails CI** → the PR can't merge.
 
 ---
 
 ## 5. Change what gets ingested (e.g. add a coin)
 
 The coin list is an env var (`COINS`) read by `ingestion/main.py`.
-- **Local / one-off:** `COINS=bitcoin,ethereum,solana,cardano,dogecoin python ingestion/main.py`
-- **Permanently (the deployed function):** add `COINS` to the `--set-env-vars` in
-  `ingestion/deploy.sh`, then re-run `PROJECT_ID=$GCP_PROJECT ./ingestion/deploy.sh`.
+
+- **Local / one-off:** `COINS=bitcoin,ethereum,solana,cardano,dogecoin .venv/bin/python ingestion/main.py`
+- **Permanently (the deployed function):** edit `--set-env-vars` in `ingestion/deploy.sh`,
+  then re-run `ENV=prod PROJECT_ID=$GCP_PROJECT_PROD ./ingestion/deploy.sh`.
 
 ---
 
@@ -134,85 +130,115 @@ gh run view <RUN_ID> --log-failed          # the failing step's log
 gh run view <RUN_ID> --log | grep -i error # hunt the message
 ```
 Then **reproduce locally** (recipe 2) — almost every CI failure reproduces with `dbt build`
-or `dbt parse` on your machine. Fix on the branch, `git push` → CI re-runs on the same PR.
-We hit (all in the README "Gotchas"): `dbt-utils` in pip, missing secrets, the
-`state:modified.body` selector, `on_schema_change`, and Jinja-vs-SQL comments.
+or `dbt parse` on your machine. Fix, push, CI re-runs on the same PR.
+
+Common categories (more in `README.md` "Gotchas"):
+- "Not found: Table" → source dataset/table doesn't exist in the env CI targeted (seed).
+- WIF auth error → check the workflow's `service_account` matches an SA the WIF pool binds.
+- "Error acquiring state lock" (terraform-ci) → `tf-runner` SA is read-only; pass `-lock=false`.
 
 ---
 
 ## 7. Verify a change reached prod
 
 ```bash
-bq query --use_legacy_sql=false \
-  "SELECT * FROM \`$GCP_PROJECT.crypto_analytics.fct_crypto_prices\`
+bq query --use_legacy_sql=false --project_id=$GCP_PROJECT_PROD \
+  "SELECT * FROM \`$GCP_PROJECT_PROD.crypto_analytics.fct_crypto_prices\`
    ORDER BY ingested_at DESC LIMIT 10"
 ```
-Or check the columns: `bq show $GCP_PROJECT:crypto_analytics.fct_crypto_prices`.
+Or check the columns: `bq show $GCP_PROJECT_PROD:crypto_analytics.fct_crypto_prices`.
 
 ---
 
 ## 8. Backfill / full-refresh an incremental model
 
 `fct_crypto_prices` is incremental — normal runs only process new rows. To rebuild it from
-scratch (e.g. after changing historical logic, or to add a column to an existing table):
+scratch (changing historical logic, adding columns to existing table):
 ```bash
 dbt build --select fct_crypto_prices --full-refresh --target dev    # test in dev first!
 ```
-> Remember: incremental models use `on_schema_change='append_new_columns'` here, so *new*
-> columns get added automatically on the next run — but *changing* existing logic for past
-> rows needs `--full-refresh`.
+Then ship through CI. The prod job will run `dbt build --target prod` (no `--full-refresh`),
+which appends new columns thanks to `on_schema_change='append_new_columns'`. To do a true
+prod full-refresh, you'd dispatch the workflow manually with that flag (not currently wired).
 
 ---
 
 ## 9. Roll back a bad change
 
-The clean way — revert through the same PR flow (don't force-push `main`). Our merges are
-**squash** commits, so each PR is one normal commit you can revert directly:
+Squash-merges produce single normal commits — revert them via the same PR flow:
 ```bash
 git checkout main && git pull
-git log --oneline -5                    # find the squash commit to undo
+git log --oneline -5                    # find the bad commit
 git checkout -b revert/bad-change
-git revert <commit_sha>                 # squash commit = single parent, no -m needed
+git revert <commit_sha>
 git push -u origin revert/bad-change
-gh pr create --fill                     # open it as a PR, let CI pass, then merge
+gh pr create --fill                     # let CI pass, merge, approve prod deploy
 ```
-(Or use the **"Revert" button** on the merged PR in the GitHub UI — it opens this revert PR
-for you.) On merge, CD rebuilds staging→prod from the reverted state. For data already
-written, `--full-refresh` (recipe 8) rebuilds the table from current logic.
+For data already written, `--full-refresh` (recipe 8) rebuilds the table from current logic.
 
 ---
 
 ## 10. Operate the scheduled jobs
 
 ```bash
-# the every-5-min ingestion (Cloud Scheduler)
-gcloud scheduler jobs pause  crypto-ingest-5min --location=us-central1
-gcloud scheduler jobs resume crypto-ingest-5min --location=us-central1
-gcloud scheduler jobs run    crypto-ingest-5min --location=us-central1   # run now
-gcloud functions logs read crypto-ingest --gen2 --region=us-central1     # watch logs
+# Prod (5-min ingestion) — usually just watch
+gcloud functions logs read crypto-ingest --gen2 --region=us-central1 \
+   --project=$GCP_PROJECT_PROD --limit=20
+gcloud scheduler jobs pause  crypto-ingest-prod --location=us-central1 --project=$GCP_PROJECT_PROD
+gcloud scheduler jobs resume crypto-ingest-prod --location=us-central1 --project=$GCP_PROJECT_PROD
 
-# the scheduled dbt transform (GitHub Actions cron) — run on demand:
+# Staging — paused by default; resume → run → pause for one-off
+gcloud scheduler jobs resume crypto-ingest-staging --location=us-central1 --project=$GCP_PROJECT_STAGING
+gcloud scheduler jobs run    crypto-ingest-staging --location=us-central1 --project=$GCP_PROJECT_STAGING
+gcloud scheduler jobs pause  crypto-ingest-staging --location=us-central1 --project=$GCP_PROJECT_STAGING
+
+# Dev — no deployed function. Run locally:
+.venv/bin/python ingestion/main.py
+
+# Scheduled dbt cron (every 6h, prod refresh) — dispatch manually:
 gh workflow run "scheduled dbt (prod refresh)"
 
-# local Airflow (learning the orchestrator)
-cd airflow && docker compose up -d        # start (UI: localhost:8088, airflow/airflow)
+# Local Airflow (learning the orchestrator)
+cd airflow && docker compose up -d        # UI: localhost:8088, airflow/airflow
 docker compose down                       # stop when done
 ```
 
 ---
 
-## 11. Add a whole new environment (e.g. `qa`)
+## 11. Approve a prod deploy (required-reviewer gate)
 
-1. **Terraform**: add `crypto_analytics_qa` to the `datasets` map in `terraform/main.tf`, `terraform apply`.
-2. **dbt**: add a `qa` target in `dbt/profiles.yml` (copy `staging`, change `dataset`).
-3. **CI**: add a job/step that builds `--target qa` where you want it in the promotion chain.
+The `prod` job in `dbt-ci.yml` and the `scheduled-dbt.yml` cron both use
+`environment: production`, which requires my approval.
+
+**Via UI**: Actions → run → **Review deployments** → approve.
+
+**Via CLI:**
+```bash
+RUN=$(gh run list --branch main --limit 1 --json databaseId --jq '.[0].databaseId')
+PROD_ENV_ID=$(gh api repos/edwinrdrr/crypto-pipeline/environments/production --jq .id)
+gh api -X POST "repos/edwinrdrr/crypto-pipeline/actions/runs/$RUN/pending_deployments" \
+  -F "environment_ids[]=$PROD_ENV_ID" -f state=approved -f comment="ship it"
+```
+
+---
+
+## 12. Add a whole new environment (e.g. `qa`)
+
+1. **Terraform**: add `terraform/envs/qa/` (copy from `dev/`); create
+   `crypto-pipeline-qa-<suffix>` project; `terraform apply`.
+2. **dbt**: add a `qa` target in `profiles.yml`.
+3. **GitHub Environment**: `gh api -X PUT repos/.../environments/qa`; set
+   `GCP_PROJECT_QA` secret on it.
+4. **WIF**: add `qa` to `env_dbt_ci_sa_emails` in `envs/infra/main.tf`; `terraform apply`.
+5. **Workflow**: add a `qa` job in `dbt-ci.yml` referencing the `qa` Environment.
 
 That's "promotion via config, not code" — the pipeline code never changes, only the wiring.
 
 ---
 
 ### Where to look when stuck
-- **Why does it work this way?** → `docs/environments-and-cicd.md`
-- **Exact setup / reproduce / gotchas** → `README.md`
-- **Quick commands / env vars** → `CLAUDE.md`
-- **What was done & when** → `LEARNING.md`
+- **Why does it work this way?** → `environments-and-cicd.md`
+- **Exact current architecture** → `../README.md`
+- **Quick commands / env vars** → `../CLAUDE.md`
+- **What was done & when** → `../LEARNING.md`
+- **A real recorded trace** → `walkthrough-one-change.md`

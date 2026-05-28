@@ -1,7 +1,7 @@
 # Start here — the mental model (read this first)
 
 If "dev / staging / prod" and "git push / CI/CD" feel tangled, this page untangles them
-from zero, using your real pipeline. Read this *before* the concept guide.
+from zero, using your real Level-3 pipeline. Read this *before* the concept guide.
 
 ---
 
@@ -10,166 +10,161 @@ from zero, using your real pipeline. Read this *before* the concept guide.
 When something runs in this project, ask **two different questions** — they're independent:
 
 1. **WHERE does the code run?** (which *computer*) → your **laptop**, a **CI runner**, or a **scheduler**.
-2. **WHICH environment does it touch?** (which *database*) → **dev**, **staging**, or **prod**.
+2. **WHICH environment does it touch?** (which *project/database*) → **dev**, **staging**, or **prod**.
 
 Most confusion comes from squashing these into one. They are not the same. Example: you can
-run dbt **on your laptop** that writes to the **dev** database in the cloud. The *computer* is
-your laptop; the *environment* is dev. Different axes.
+run dbt **on your laptop** that writes to the dev **GCP project**'s BigQuery. The *computer*
+is your laptop; the *environment* is dev. Different axes.
 
 ---
 
-## Environments are cloud databases — NOT "your laptop"
+## Environments are entire cloud PROJECTS — NOT "your laptop"
 
-`dev`, `staging`, and `prod` are **three separate databases in the cloud** (BigQuery datasets):
+In this Level-3 setup, `dev`, `staging`, and `prod` are **three separate GCP projects** —
+each with its own bucket, datasets, service accounts, and (where applicable) Cloud Function:
 
 ```
-dev      = crypto_analytics_dev        (in the cloud)
-staging  = crypto_analytics_staging    (in the cloud)
-prod     = crypto_analytics            (in the cloud)
+dev      = crypto-pipeline-dev-260528         (whole GCP project — bucket + 2 datasets + SAs)
+staging  = crypto-pipeline-stg-260528         (whole GCP project — same shape + paused function)
+prod     = crypto-pipeline-prod-260528        (whole GCP project — same shape + 5-min function)
+
+infra    = crypto-pipeline-infra-260528       (shared infra: tfstate, ci-state, WIF pool, tf-runner)
 ```
 
-They all live in Google Cloud. None of them is "on your laptop." When you run dbt locally,
-your laptop is just the *computer doing the work* — it reaches over the internet and writes
-into the **dev** database. So:
+All projects live in Google Cloud. None of them is "on your laptop." When you run dbt
+locally, your laptop is just the *computer doing the work* — it reaches over the internet
+into the **dev project** and writes there. So:
 
-> **"dev" is a database in the cloud. Your laptop *targets* dev — it doesn't *contain* it.**
+> **A project IS an environment.** Your laptop *targets* dev (writes into the dev project);
+> it doesn't *contain* dev.
 
-"Local" is not a fourth environment. **Local = your laptop**, a place where you write code and
-(usually) run it against the dev database.
+"Local" is not a fourth environment. **Local = your laptop**, a place where you write code
+and (usually) run it against the dev project.
 
 ---
 
 ## What `git push` actually does (and doesn't)
 
 `git push` **uploads your code to GitHub. That's it.** By itself it deploys to *nothing* and
-touches *no* database. What happens *next* depends entirely on **where** you pushed:
+touches *no* GCP project. What happens *next* depends entirely on **where** you pushed:
 
 | What you do | What runs automatically (CI/CD) | Which environment it touches |
 |---|---|---|
-| push a **branch** + open a Pull Request | tests your change | **dev** (a temporary per-PR database) |
-| **merge** the PR into `main` | builds + tests | **staging**, then **prod** |
+| push a **branch** + open a Pull Request | tests your change | **dev project** (ephemeral schema `dbt_ci_pr_<n>`) |
+| **merge** the PR into `main` | builds + tests | **staging project**, then **prod project** *(after my manual approval)* |
 
-So — answering the exact question: **pushing is not "for prod."**
-- Pushing a *feature branch* → exercises **dev**.
-- *Merging to main* → promotes to **staging → prod**.
-
-Same push button; the destination depends on the branch and whether it's merged.
+So pushing is **not "for prod."**
+- Pushing a *feature branch* → exercises the **dev project**.
+- *Merging to main* → **staging project**, then waits for required-reviewer approval, then **prod project**.
 
 ---
 
 ## The conveyor belt: how code moves through environments
 
 ```
-  YOU (laptop)              GitHub (CI/CD does this automatically)
-  ───────────              ──────────────────────────────────────────
+  YOU (laptop)            GitHub (CI/CD does this automatically, via WIF)
+  ───────────             ──────────────────────────────────────────
   write code                                  
-  run vs dev   ──push branch──►  Pull Request ──►  test on DEV (temp db)
+  run vs dev   ──push branch──►  Pull Request ──►  test in DEV project (temp schema, dropped after)
                                        │
                                   (review, merge)
                                        ▼
-                                 merge to main ──►  build STAGING ──►  build PROD
-                                                    (if staging passed) ┘
+                                 merge to main ──►  build STAGING project
+                                                              │
+                                              (you click 'Approve' — required-reviewer)
+                                                              ▼
+                                                  build PROD project
+                                                              │
+                                                              ▼
+                                              publish manifest.json to ci-state bucket
+                                              (becomes next PR's Slim CI baseline)
 ```
 
 - **Branch = your sandbox.** Break things freely; nothing real is affected.
 - **`main` = the source of truth.** What's on `main` is what goes to prod.
 - **CI/CD = the conveyor belt + quality gates** that carry code branch → dev → staging → prod.
 - A **red (failing) check blocks the merge** — that's how bad code is stopped before prod.
+- A **paused job on `production`** blocks the deploy — that's how *you* gate prod.
 
 So `dev/staging/prod` are **not** "only local and unrelated to CI/CD." They are exactly the
-stations the CI/CD conveyor belt moves your code through.
+projects the CI/CD conveyor belt moves your code through.
 
 ---
 
-## A real trace from this repo (PR #8)
+## A real trace from this repo (PR #28's merge)
 
-You added a `price_direction` column. Here's where each step *ran* and what it *touched*:
+PR #28 wired CI to WIF. Here's where each step *ran* and what it *touched*:
 
-| Step | WHERE it ran | WHICH environment (database) |
-|------|-------------|------------------------------|
-| `dbt build --target dev` while developing | your **laptop** | `crypto_analytics_dev` (cloud) |
-| opened the PR → CI checked it | **GitHub CI** | `dbt_ci_pr_8` (cloud, temporary dev db, dropped after) |
-| merged to `main` → staging job | **GitHub CI** | `crypto_analytics_staging` (cloud) |
-| then the prod job (staging passed) | **GitHub CI** | `crypto_analytics` (cloud) |
+| Step | WHERE it ran | WHICH project |
+|------|-------------|--------------|
+| `dbt build --target dev` while developing | your **laptop** | `crypto-pipeline-dev-260528` |
+| opened the PR → `pr-ephemeral` (WIF auth) | **GitHub CI** | `crypto-pipeline-dev-260528` (temp schema `dbt_ci_pr_28`, dropped) |
+| merged to `main` → `staging` job (WIF) | **GitHub CI** | `crypto-pipeline-stg-260528` |
+| `prod` job paused for required-reviewer | **paused** | — (waiting on me) |
+| approved → `prod` job (WIF) | **GitHub CI** | `crypto-pipeline-prod-260528` |
+| `prod` job uploads manifest | **GitHub CI** | infra's `ci-state` bucket |
 
-Look at row 1: it ran on your **laptop** but wrote to a **cloud** database. Rows 2–4 ran on
-**GitHub's** computers. **Every environment is in the cloud** — your laptop was just one of the
-machines that ran dbt against them.
+Look at row 1: it ran on your **laptop** but wrote to a **cloud project**. Rows 2–6 ran on
+**GitHub's** computers. **Every environment is a GCP project** — your laptop is just one of
+the machines that runs code against them.
 
 ---
 
 ## The differences between dev / staging / prod
 
-They're three databases that differ in **who touches them, what data they hold, and what
-breaks if you mess up:**
-
 | | **dev** | **staging** | **prod** |
 |---|---|---|---|
-| Who/what runs against it | you (laptop) + PR checks | CI, on merge | CI, after staging passes |
-| Data inside | small / throwaway | prod-like | the real data |
-| You touch it directly? | yes (while developing) | no — only via CI | no — only via CI |
+| GCP project | `crypto-pipeline-dev-260528` | `crypto-pipeline-stg-260528` | `crypto-pipeline-prod-260528` |
+| Who/what runs against it | you (laptop) + PR `pr-ephemeral` job | CI `staging` job on merge | CI `prod` job *after* your approval |
+| Ingestion cadence | manual local (`python ingestion/main.py`) | paused scheduler (resume → run → pause) | scheduler every 5 min (live) |
+| Data inside | small / throwaway | small (operator triggers) | continuously growing |
+| You touch it directly? | yes (while developing) | rarely — usually via CI | only to inspect / debug |
 | If it breaks | nobody cares | caught *before* prod | dashboards/users break |
-| Purpose | experiment freely | final rehearsal | the real thing |
+| Cost contribution | ~$0 | ~$0 | most of the project's cost (still ~$0) |
 
-The key promotion rule: **the same code flows dev → staging → prod; each environment rebuilds
-its own tables.** You change *config* (which target/dataset), never the pipeline code, to move
-between them. That's "promotion via config, not code."
+The key promotion rule: **the same code flows dev → staging → prod; each environment
+rebuilds its own tables in its own project.** You change *config* (`DBT_TARGET` / which
+env's secrets the CI job uses), never the pipeline code, to move between them.
 
 ---
 
-## Common misconceptions (the exact ones you asked)
+## Common misconceptions (the exact ones we worked through)
 
 **"Is pushing only for prod?"**
-No. Push uploads code to GitHub. A pushed *branch* (via a PR) is tested on **dev**. Only when
-you **merge to `main`** does it go to **staging → prod**.
+No. Push uploads code to GitHub. A pushed *branch* (via a PR) is tested in the **dev project**.
+Only when you **merge to `main`** does it touch **staging**, then **prod** (after your approval).
 
 **"Are dev/staging/prod only on local, unrelated to CI/CD?"**
-The opposite. They're all **cloud databases**, and **CI/CD is the thing that moves your code
+The opposite. They're all **GCP projects**, and **CI/CD is the thing that moves your code
 through them**. "Local" (your laptop) is separate — it's just where you write code and run it
-against dev while developing.
+against the dev project while developing.
 
 **"So what's the difference between them?"**
-Which data they hold, who's allowed to touch them, and the cost of breaking them — see the
-table above. dev = safe scratchpad; staging = dress rehearsal; prod = the real, protected one.
+Different GCP projects, different IAM, different schedulers, different cost of breaking — see
+the table above. dev = safe scratchpad; staging = dress rehearsal; prod = the real, gated one.
 
 **"Then what's local for?"**
 Writing code and testing fast against dev *before* you push — so CI catches fewer problems and
-you don't waste round-trips. (See `docs/howto-playbook.md` recipe 2.)
+you don't waste round-trips. (See `howto-playbook.md` recipe 2.)
 
 **"Don't you just put `environment=dev` in a `.env` file to do dev?"**
-Almost — good instinct, with three refinements:
-1. An env var **does** select the environment — in this project it's literally `DBT_TARGET=dev`
-   (+ `DBT_DATASET`, `RAW_DATASET`). So the "a variable picks the env" idea is correct.
-2. But the var doesn't *create* dev — it **points your run at** the dev database, which already
-   exists in the cloud. ("Which door to open," not "build a room.")
-3. A `.env` is a **local-laptop convenience** for setting those vars. **CI/cloud don't read a
-   `.env`** — they inject the *same* vars via the workflow `env:` (per branch: PR→dev, merge→
-   staging→prod) and `--set-env-vars`. And **secrets never go in a committed `.env`** — those
-   live in GitHub Secrets / a secret manager.
-
-So the best practice is: **config from the environment, secrets from a secret manager** — with a
-gitignored **`.env` locally** (see `.env.example`) and **platform injection in CI/cloud**. Use both,
-each in its place. Copy `.env.example` → `.env`, then `set -a && source .env && set +a`.
+Almost — good instinct, with refinements:
+1. An env var **does** select the environment — here it's `DBT_TARGET=dev` (+ `GCP_PROJECT_DEV`).
+2. But the var doesn't *create* dev — it **points your run at** the dev project, which already
+   exists in the cloud.
+3. `.env` is a **local-laptop convenience**. **CI/cloud don't read a `.env`** — CI uses
+   `google-github-actions/auth@v2` with a Workload Identity Federation token to assume each
+   env's per-Environment secrets and per-env `dbt-ci@<project>` SA.
+4. **Secrets never go in a `.env`** — there are no long-lived SA keys at all anymore (WIF
+   replaced them).
 
 **"From my laptop, which environment should I touch?"**
-**dev only** — ideally your own dev schema (`DBT_DATASET=dbt_$USER`). Writing to staging/prod is
-**CI/CD's job**; doing it by hand from a laptop skips the PR/review/test gate (that's how prod
-accidents happen). *Reading* prod (a query to verify, or Slim CI deferral) is fine — *writing*
-prod from local is not. Your `.env` defaults to `DBT_TARGET=dev`, so dev is the safe default.
+**dev only** — your `.env` defaults `DBT_TARGET=dev` so this is the safe default. Writing to
+staging/prod is **CI/CD's job**; doing it by hand from a laptop skips the PR/review/test gate
+(that's how prod accidents happen). *Reading* prod (a query to verify, or Slim CI deferral)
+is fine — *writing* prod from local is not.
 
 ---
 
 > 💬 **More answers:** every question from building this project is collected in
 > **`faq.md`** (environments, push/CI-CD, config/`.env`, cost, architecture, orchestration).
-
----
-
-## Say it back in one breath
-
-> There are **three cloud databases** (dev, staging, prod). **Your laptop** is where you write
-> code and run it against **dev**. **`git push` + CI/CD** is the conveyor belt: a **branch/PR**
-> gets tested on **dev**, and **merging to `main`** promotes the code to **staging**, then
-> **prod**. Local isn't an environment; pushing isn't "for prod"; and the environments are the
-> stations CI/CD moves your code through.
-
-Next: `docs/environments-and-cicd.md` (deeper concepts) → `docs/howto-playbook.md` (how to do tasks).
