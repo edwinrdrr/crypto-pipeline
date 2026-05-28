@@ -1,0 +1,12 @@
+project_id           = "crypto-pipeline-infra-260528"
+region               = "us-central1"
+location             = "US"
+
+# The 3 env project ids (set by bootstrap.sh; needed so WIF can bind to their dbt-ci SAs).
+dev_project_id     = "crypto-pipeline-dev-260528"
+staging_project_id = "crypto-pipeline-stg-260528"
+prod_project_id    = "crypto-pipeline-prod-260528"
+
+# This repo. Get the numeric id via:  gh repo view --json id -q .databaseId
+github_repository    = "edwinrdrr/crypto-pipeline"
+github_repository_id = "REPLACE_WITH_NUMERIC_ID"
