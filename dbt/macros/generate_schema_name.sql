@@ -1,21 +1,24 @@
 {#
-  Override dbt's default schema naming.
+  dbt-recommended `generate_schema_name` override.
 
-  By default dbt builds models into "<target_schema>_<custom_schema>", which is
-  confusing for environment isolation. We instead use the schema AS-IS:
+  The DEFAULT dbt macro would build into "<target.schema>_<custom_schema>" when a model
+  declares a custom schema (e.g. +schema: marketing). That's noisy across environments.
 
-    - no custom schema set  -> use target.schema (the dataset from profiles.yml,
-      which is env-driven: per-PR `dbt_ci_pr_<n>`, `crypto_analytics_staging`,
-      or `crypto_analytics`)
-    - custom schema set     -> use exactly that name (no prefix)
+  This override applies a `+schema:` value AS-IS — but ONLY in prod. In dev/CI it falls
+  back to target.schema (the dataset from profiles.yml, env-driven: per-PR `dbt_ci_pr_<n>`,
+  staging, or `crypto_analytics_dev`). This is the dbt-documented pattern. dbt explicitly
+  warns against the simpler "always use custom_schema_name" form: in dev/CI it would route
+  every PR/developer to the SAME schema (e.g. `marketing`) and they'd overwrite each other.
 
-  This is what lets each PR build into its own throwaway dataset without
-  colliding with shared dev / staging / prod.
+  Our project doesn't currently set `+schema:` on any model — so functionally this resolves
+  to `target.schema` everywhere, same as the default. The macro is here to keep us safe IF
+  a model later adds `+schema:` — in dev it stays isolated; in prod it's used as written.
 #}
 {% macro generate_schema_name(custom_schema_name, node) -%}
-    {%- if custom_schema_name is none -%}
-        {{ target.schema }}
-    {%- else -%}
+    {%- set default_schema = target.schema -%}
+    {%- if target.name == 'prod' and custom_schema_name is not none -%}
         {{ custom_schema_name | trim }}
+    {%- else -%}
+        {{ default_schema }}
     {%- endif -%}
 {%- endmacro %}

@@ -81,17 +81,36 @@ crypto:
       location: US
 ```
 
-### 3. Clean schema names with one macro (do this once)
+### 3. (Optional) Override `generate_schema_name` — the **dbt-recommended** pattern
 
-Without this, dbt builds tables into `<target_schema>_<custom>` — ugly and breaks Slim CI (see
-`../faq.md` → "why `.body`"). Override:
+By default, dbt builds models that declare a custom schema (`+schema: marketing`) into
+`<target.schema>_marketing`. Often you want just `marketing` *in prod*, but you do **NOT** want
+to use the bare custom schema in dev/CI — every developer and PR would write to the same
+`marketing` schema and clobber each other (see the official dbt warning below).
+
+dbt's recommended pattern uses `target.name` to apply the custom schema **only in prod**:
 ```sql
 -- dbt/macros/generate_schema_name.sql  (📁 already in this repo)
 {% macro generate_schema_name(custom_schema_name, node) -%}
-    {%- if custom_schema_name is none -%}{{ target.schema }}
-    {%- else -%}{{ custom_schema_name | trim }}{%- endif -%}
+    {%- set default_schema = target.schema -%}
+    {%- if target.name == 'prod' and custom_schema_name is not none -%}
+        {{ custom_schema_name | trim }}
+    {%- else -%}
+        {{ default_schema }}
+    {%- endif -%}
 {%- endmacro %}
 ```
+> 📚 **Quoted from dbt docs** — "Don't replace `default_schema` in the macro" with just
+> `{{ custom_schema_name | trim }}`; doing so means developers overwrite each other's models
+> in dev/CI. The pattern above is the recommended one.
+
+Our project doesn't currently set `+schema:` on any model, so this macro effectively returns
+`target.schema` everywhere — same as the default. It's here to **keep us safe if we ever do**
+add a custom schema later.
+
+> 💡 *Separate concern:* the "Slim CI rebuilds everything across environments" issue we hit is
+> fixed by using `state:modified.body+` (compares SQL only), **not** by this macro. See
+> `../faq.md` → "why `.body` and not plain `state:modified`?"
 
 ### 4. Make local default to dev (`.env`)
 
