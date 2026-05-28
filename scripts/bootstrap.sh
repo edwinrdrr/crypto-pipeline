@@ -1,123 +1,185 @@
 #!/usr/bin/env bash
-# Reproduce the ENTIRE project on a fresh GCP project, in one command.
-# Idempotent: safe to re-run; each phase checks before acting.
+# Multi-project bootstrap for the Level-3 crypto-pipeline.
 #
-# Prerequisites (one-time, interactive — see scripts/install-tools.sh):
-#   - tools installed: gcloud, terraform (~/bin), gh, and .venv with dbt+deps
-#   - authenticated:   gcloud auth login && gcloud auth application-default login && gh auth login
+# Creates 4 GCP projects (infra + dev + staging + prod), enables APIs,
+# sets budgets, creates the tfstate bucket, then applies Terraform per env.
+# Idempotent — safe to re-run.
 #
-# Usage:
-#   PROJECT_ID=crypto-pipeline-$(date +%y%m%d)-$RANDOM \
-#   BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX \
-#   ./scripts/bootstrap.sh
+# Prerequisites (one-time, interactive):
+#   - scripts/install-tools.sh has been run (gcloud, terraform, dbt-bigquery, gh)
+#   - gcloud auth login && gcloud auth application-default login
+#   - gh auth login
 #
-# Optional env: REGION (us-central1), LOCATION (US), BUDGET_AMOUNT (80000 — native currency
-# of your billing account; use 5 for a USD account), GITHUB_REPO (crypto-pipeline).
+# Required env:
+#   BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX   (gcloud billing accounts list)
+#
+# Optional env (with defaults):
+#   PROJECT_SUFFIX=$(date +%y%m%d)            # appended to all 4 project ids
+#   REGION=us-central1
+#   LOCATION=US                               # multi-region for BQ + GCS
+#   BUDGET_AMOUNT=80000                       # in your billing account's native currency
+#                                              # (80,000 IDR ≈ $5; for a USD account use 5)
+#   GITHUB_REPO=edwinrdrr/crypto-pipeline
 
 set -euo pipefail
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
+
+: "${BILLING_ACCOUNT_ID:?set BILLING_ACCOUNT_ID (run: gcloud billing accounts list)}"
+PROJECT_SUFFIX="${PROJECT_SUFFIX:-$(date +%y%m%d)}"
+REGION="${REGION:-us-central1}"
+LOCATION="${LOCATION:-US}"
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-80000}"
+GITHUB_REPO="${GITHUB_REPO:-edwinrdrr/crypto-pipeline}"
+
+INFRA_PROJECT="crypto-pipeline-infra-$PROJECT_SUFFIX"
+DEV_PROJECT="crypto-pipeline-dev-$PROJECT_SUFFIX"
+STG_PROJECT="crypto-pipeline-stg-$PROJECT_SUFFIX"
+PROD_PROJECT="crypto-pipeline-prod-$PROJECT_SUFFIX"
+TFSTATE_BUCKET="${INFRA_PROJECT}-tfstate"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-: "${PROJECT_ID:?set PROJECT_ID}"
-: "${BILLING_ACCOUNT_ID:?set BILLING_ACCOUNT_ID (gcloud billing accounts list)}"
-REGION="${REGION:-us-central1}"
-LOCATION="${LOCATION:-US}"
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-80000}"     # native currency; budget currency MUST match the account
-GITHUB_REPO="${GITHUB_REPO:-crypto-pipeline}"
-BUCKET="$PROJECT_ID-crypto-raw"
-PY="$REPO_ROOT/.venv/bin/python"
-DBT="$REPO_ROOT/.venv/bin/dbt"
+echo "##########  Level-3 bootstrap  ##########"
+echo "  infra:   $INFRA_PROJECT"
+echo "  dev:     $DEV_PROJECT"
+echo "  staging: $STG_PROJECT"
+echo "  prod:    $PROD_PROJECT"
+echo "  tfstate: gs://$TFSTATE_BUCKET"
+echo
 
-echo "########## Bootstrap: $PROJECT_ID ##########"
+# ── helpers ─────────────────────────────────────────────────────────────────
+create_project() {
+  local p=$1 name=$2
+  if ! gcloud projects describe "$p" >/dev/null 2>&1; then
+    echo "==> creating project $p"
+    gcloud projects create "$p" --name="$name"
+  else
+    echo "    project $p already exists — skipping create"
+  fi
+  # Only attempt link if not already linked — re-linking an already-linked project
+  # is counted as a fresh "link attempt" by the billing API and fails when the
+  # account is at its project-link quota.
+  if gcloud billing projects describe "$p" --format='value(billingEnabled)' 2>/dev/null | grep -q "True"; then
+    echo "    billing already linked for $p — skipping"
+  else
+    echo "    linking billing for $p"
+    gcloud billing projects link "$p" --billing-account="$BILLING_ACCOUNT_ID" >/dev/null
+  fi
+}
 
-# ── Phase 1: project + billing + APIs ────────────────────────────────────────
-echo "==> [1] Project, billing, APIs"
-if ! gcloud projects describe "$PROJECT_ID" >/dev/null 2>&1; then
-  gcloud projects create "$PROJECT_ID" --name="crypto-pipeline-learn"
-fi
-gcloud billing projects link "$PROJECT_ID" --billing-account="$BILLING_ACCOUNT_ID" >/dev/null
-gcloud config set project "$PROJECT_ID" >/dev/null
-gcloud auth application-default set-quota-project "$PROJECT_ID" >/dev/null 2>&1 || true
-gcloud services enable \
-  storage.googleapis.com bigquery.googleapis.com \
-  cloudfunctions.googleapis.com cloudscheduler.googleapis.com run.googleapis.com \
-  cloudbuild.googleapis.com artifactregistry.googleapis.com eventarc.googleapis.com \
-  billingbudgets.googleapis.com --project="$PROJECT_ID"
+ensure_budget() {
+  local p=$1
+  local pn ; pn=$(gcloud projects describe "$p" --format='value(projectNumber)')
+  if ! gcloud billing budgets list --billing-account="$BILLING_ACCOUNT_ID" \
+        --format='value(budgetFilter.projects)' 2>/dev/null | grep -q "projects/$pn"; then
+    gcloud billing budgets create --billing-account="$BILLING_ACCOUNT_ID" \
+      --display-name="$p (~\$5)" \
+      --budget-amount="$BUDGET_AMOUNT" \
+      --threshold-rule=percent=0.5 \
+      --threshold-rule=percent=0.9 \
+      --threshold-rule=percent=1.0 \
+      --filter-projects="projects/$pn" >/dev/null
+    echo "    budget created for $p"
+  else
+    echo "    budget already exists for $p — skipping"
+  fi
+}
 
-# ── Phase 2: $5 budget (skip if one already targets this project) ────────────
-echo "==> [2] Budget alert (~budget $BUDGET_AMOUNT in account currency)"
-PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
-if ! gcloud billing budgets list --billing-account="$BILLING_ACCOUNT_ID" \
-      --format='value(budgetFilter.projects)' 2>/dev/null | grep -q "projects/$PROJECT_NUMBER"; then
-  gcloud billing budgets create --billing-account="$BILLING_ACCOUNT_ID" \
-    --display-name="crypto-pipeline-learn (~\$5)" \
-    --budget-amount="$BUDGET_AMOUNT" \
-    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0 \
-    --filter-projects="projects/$PROJECT_NUMBER" >/dev/null
-  echo "    budget created"
+# ── Phase 1: create the 4 projects + link billing ──────────────────────────
+echo "==> [1/5] Creating projects + linking billing"
+create_project "$INFRA_PROJECT" "crypto-pipeline-infra"
+create_project "$DEV_PROJECT"   "crypto-pipeline-dev"
+create_project "$STG_PROJECT"   "crypto-pipeline-stg"
+create_project "$PROD_PROJECT"  "crypto-pipeline-prod"
+
+# Make sure gcloud's active project + ADC quota project both point at a project
+# that still exists (avoid stale references to a deleted project breaking API
+# calls like `gcloud billing budgets`).
+gcloud config set project "$INFRA_PROJECT" >/dev/null
+gcloud auth application-default set-quota-project "$INFRA_PROJECT" >/dev/null 2>&1 || true
+
+# ── Phase 2: enable APIs (per role) ────────────────────────────────────────
+echo "==> [2/5] Enabling APIs (may take ~30s/project)"
+COMMON_APIS="storage.googleapis.com bigquery.googleapis.com cloudresourcemanager.googleapis.com iam.googleapis.com"
+FUNCTION_APIS="$COMMON_APIS cloudfunctions.googleapis.com run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com eventarc.googleapis.com cloudscheduler.googleapis.com"
+INFRA_APIS="$COMMON_APIS iamcredentials.googleapis.com sts.googleapis.com billingbudgets.googleapis.com"
+gcloud services enable $INFRA_APIS     --project="$INFRA_PROJECT"  >/dev/null
+gcloud services enable $COMMON_APIS    --project="$DEV_PROJECT"    >/dev/null
+gcloud services enable $FUNCTION_APIS  --project="$STG_PROJECT"    >/dev/null
+gcloud services enable $FUNCTION_APIS  --project="$PROD_PROJECT"   >/dev/null
+
+# ── Phase 3: per-project budget alerts ─────────────────────────────────────
+echo "==> [3/5] Per-project budget alerts"
+ensure_budget "$INFRA_PROJECT"
+ensure_budget "$DEV_PROJECT"
+ensure_budget "$STG_PROJECT"
+ensure_budget "$PROD_PROJECT"
+
+# ── Phase 4: tfstate bucket + per-env tfvars + apply data projects ────────
+echo "==> [4/5] Bootstrap tfstate bucket + apply Terraform per env"
+
+if ! gcloud storage buckets describe "gs://$TFSTATE_BUCKET" --project="$INFRA_PROJECT" >/dev/null 2>&1; then
+  gcloud storage buckets create "gs://$TFSTATE_BUCKET" \
+    --project="$INFRA_PROJECT" \
+    --location="$LOCATION" \
+    --uniform-bucket-level-access >/dev/null
+  gcloud storage buckets update "gs://$TFSTATE_BUCKET" --versioning >/dev/null
+  echo "    created tfstate bucket"
 else
-  echo "    budget already exists for this project — skipping"
+  echo "    tfstate bucket already exists"
 fi
 
-# ── Phase 3: infrastructure (bucket + 5 datasets) ────────────────────────────
-echo "==> [3] Terraform (bucket + 5 datasets)"
-( cd terraform
-  printf 'project_id = "%s"\nregion     = "%s"\nlocation   = "%s"\n' \
-    "$PROJECT_ID" "$REGION" "$LOCATION" > terraform.tfvars
-  terraform init -input=false >/dev/null
-  terraform apply -auto-approve -input=false >/dev/null )
-echo "    infra applied"
+# Note: backend.tf in each env points at this bucket name (hardcoded). If the
+# user picked a different PROJECT_SUFFIX, the backend.tf would need updating.
+# For learning, the default suffix matches the backend.tf default.
 
-# ── Phase 4: seed raw tables (dev + prod) so dbt source() has data ───────────
-echo "==> [4] Seed raw tables (crypto_raw_dev + crypto_raw)"
-for ds in crypto_raw_dev crypto_raw; do
-  GCP_PROJECT="$PROJECT_ID" RAW_BUCKET="$BUCKET" BQ_DATASET="$ds" "$PY" ingestion/main.py
-done
+apply_env() {
+  local env=$1 proj=$2
+  echo "==> applying terraform/envs/$env  (project $proj)"
+  cat > "terraform/envs/$env/terraform.tfvars" <<EOF
+project_id = "$proj"
+region     = "$REGION"
+location   = "$LOCATION"
+EOF
+  ( cd "terraform/envs/$env"
+    terraform init -input=false -reconfigure
+    terraform apply -auto-approve -input=false )
+}
 
-# ── Phase 5: GitHub repo (create + push main if no remote yet) ───────────────
-echo "==> [5] GitHub repo"
-if [ ! -d .git ]; then git init -b main >/dev/null && git add -A && git commit -q -m "Initial commit"; fi
-if ! git remote get-url origin >/dev/null 2>&1; then
-  gh repo create "$GITHUB_REPO" --private --source=. --remote=origin --push
-else
-  git push -u origin main 2>/dev/null || true
-fi
+apply_env dev     "$DEV_PROJECT"
+apply_env staging "$STG_PROJECT"
+apply_env prod    "$PROD_PROJECT"
 
-# ── Phase 6: CI service account + GitHub secrets ─────────────────────────────
-echo "==> [6] CI service account + GitHub secrets"
-CI_SA="dbt-ci@$PROJECT_ID.iam.gserviceaccount.com"
-if ! gcloud iam service-accounts describe "$CI_SA" --project="$PROJECT_ID" >/dev/null 2>&1; then
-  gcloud iam service-accounts create dbt-ci --display-name="dbt CI" --project="$PROJECT_ID"
-fi
-for role in roles/bigquery.dataEditor roles/bigquery.jobUser roles/bigquery.dataOwner; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$CI_SA" --role="$role" --condition=None >/dev/null
-done
-# storage on the bucket for the Slim CI manifest (read on PR, write on prod)
-gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
-  --member="serviceAccount:$CI_SA" --role=roles/storage.objectAdmin >/dev/null
-TMPKEY="$(mktemp)"
-gcloud iam service-accounts keys create "$TMPKEY" --iam-account="$CI_SA" >/dev/null 2>&1
-gh secret set GCP_PROJECT --body "$PROJECT_ID" >/dev/null
-gh secret set GCP_SA_KEY < "$TMPKEY" >/dev/null
-rm -f "$TMPKEY"
-echo "    secrets set (key deleted locally)"
+# ── Phase 5: apply infra (WIF + cross-project IAM) ────────────────────────
+echo "==> [5/5] Applying infra (WIF pool/provider + cross-project IAM)"
 
-# ── Phase 7: deploy the 5-min automation (creates runtime SA + scheduler) ────
-echo "==> [7] Deploy Cloud Function + Scheduler"
-( cd ingestion && PROJECT_ID="$PROJECT_ID" REGION="$REGION" RAW_BUCKET="$BUCKET" bash deploy.sh )
+REPO_ID=$(gh api "repos/$GITHUB_REPO" --jq .id)
+[ -n "$REPO_ID" ] || { echo "Could not get repo numeric id"; exit 1; }
 
-# ── Phase 8: verify (don't trust 'deployed' — trust rows) ────────────────────
-echo "==> [8] Verify"
-gcloud scheduler jobs run crypto-ingest-5min --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1 || true
-echo "    raw prod snapshots:"
-bq query --use_legacy_sql=false --project_id="$PROJECT_ID" --format=pretty \
-  "SELECT COUNT(*) AS rows_total, COUNT(DISTINCT ingested_at) AS snapshots
-   FROM \`$PROJECT_ID.crypto_raw.prices\`" || true
+cat > terraform/envs/infra/terraform.tfvars <<EOF
+project_id           = "$INFRA_PROJECT"
+region               = "$REGION"
+location             = "$LOCATION"
+dev_project_id       = "$DEV_PROJECT"
+staging_project_id   = "$STG_PROJECT"
+prod_project_id      = "$PROD_PROJECT"
+github_repository    = "$GITHUB_REPO"
+github_repository_id = "$REPO_ID"
+EOF
+
+( cd terraform/envs/infra
+  terraform init -input=false -reconfigure
+  # tfstate bucket already exists (we created it manually above) — import it
+  # so Terraform manages it going forward. Safe to run repeatedly.
+  if ! terraform state list 2>/dev/null | grep -q '^google_storage_bucket\.tfstate$'; then
+    terraform import google_storage_bucket.tfstate "$TFSTATE_BUCKET" || true
+  fi
+  terraform apply -auto-approve -input=false )
 
 echo
-echo "########## Done. ##########"
-echo "Final state: bucket + 5 datasets, 5-min ingestion running, GitHub repo with CI/CD."
-echo "Trigger the dbt prod build by pushing a dbt change (CI runs PR->staging->prod)."
-echo "Pause ingestion:  gcloud scheduler jobs pause crypto-ingest-5min --location=$REGION"
+echo "##########  DONE  ##########"
+echo "WIF provider name (use as workload_identity_provider in workflows):"
+( cd terraform/envs/infra && terraform output -raw wif_provider_name )
+echo
+echo "Next: PR D wires the workflows to WIF + makes deploy.sh env-aware."
