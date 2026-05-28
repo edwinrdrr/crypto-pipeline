@@ -130,23 +130,74 @@ DBT_PROFILES_DIR=$PWD/dbt
 
 ---
 
+## Where each environment's config actually lives (not just `.env`!)
+
+`.env` is **only your laptop, only dev-by-default.** Staging and prod config lives in
+*version-controlled files* (Terraform + `profiles.yml`) and the platforms that run them
+(CI workflow, deploy script). Here's the full map:
+
+| What | Where it lives | Per-env? | Used by |
+|---|---|---|---|
+| Dataset **names** (raw_dev, raw, analytics_dev, analytics_staging, analytics) | `terraform/main.tf` (creates them) | all listed | Terraform |
+| Bucket name | `terraform/main.tf` (`${project}-crypto-raw`) | shared | TF, code, deploy |
+| dbt **target blocks** (dev/staging/prod: each with its own `dataset:`, `method:`) | `dbt/profiles.yml` | yes — one block per env | dbt |
+| **Local laptop defaults** (which env to target, local auth, paths) | `.env` (gitignored; copy from `.env.example`) | **dev only** | local dbt/ingestion |
+| **CI per-job env** (e.g. staging job sets `DBT_TARGET=staging RAW_DATASET=crypto_raw`) | `.github/workflows/dbt-ci.yml` (`env:` per job) | yes — per CI job | GitHub Actions |
+| **Repo secrets** (`GCP_PROJECT`, `GCP_SA_KEY`) | GitHub → Settings → Secrets | shared across CI jobs | CI |
+| **Deployed function's runtime config** (`GCP_PROJECT`, `RAW_BUCKET`, `BQ_DATASET=crypto_raw`) | `ingestion/deploy.sh` (`--set-env-vars`) → stored on the function | prod (it's the deployed function) | Cloud Function at runtime |
+| Service accounts (`dbt-ci@`, `crypto-ingest-fn@`, `crypto-scheduler@`) | Created by `scripts/bootstrap.sh` / `deploy.sh` | per **project**, not per env | CI / function / scheduler |
+
+### Worked example: where is the **prod dataset name** actually written?
+
+`crypto_analytics` (the prod analytics dataset) appears in **3 places**, on purpose:
+
+1. **`terraform/main.tf`** — `datasets["crypto_analytics"]` *creates* it.
+2. **`dbt/profiles.yml`** — `outputs.prod.dataset: crypto_analytics` *tells dbt* to write to it.
+3. **`.github/workflows/dbt-ci.yml`** — the `prod` job runs `dbt build --target prod`, which *reads* (2).
+
+It is **NOT in `.env`** and you never set it from your laptop. Only CI touches it.
+
+### `.env` is for, and isn't for
+
+| `.env` is for | `.env` is **NOT** for |
+|---|---|
+| Your laptop's defaults so commands "just work" (`DBT_TARGET=dev`, datasets, project) | Staging/prod dataset names (those live in `profiles.yml` + Terraform) |
+| The project id + bucket name (so the same code works in your fork) | Secrets (SA keys, tokens) — those go in Secret Manager / GitHub Secrets |
+| Things that vary per developer/machine | Anything CI or the deployed function reads — they have their own sources |
+
+### Where does the "prod machine" actually live?
+
+There isn't one — you don't own a server. **Prod runs in two places, both managed:**
+- The **Cloud Function** (`crypto-ingest`) runs serverlessly on GCP every 5 min — config baked
+  in by `deploy.sh` via `--set-env-vars`.
+- The **dbt prod build** runs on a **GitHub Actions runner** every 6 h (or on merge to main)
+  using the workflow's `env:` block + GitHub Secrets.
+
+---
+
 ## Use
 
-### Day-to-day: pick an env by changing ONE variable, never by editing code
+### Day-to-day: pick an env by changing ONE thing, never by editing code
 
-| Goal | Set | Command |
-|------|------|---------|
-| Build to **dev** (default) | nothing — `.env` already has it | `dbt build` |
-| Build to **staging** locally (rare) | override target | `DBT_TARGET=staging dbt build` |
+| Goal | Universal way | Shortcut that works here |
+|------|---------------|--------------------------|
+| Build to **dev** (default) | `dbt build --target dev` | `dbt build` (`.env` sets `DBT_TARGET=dev`) |
+| Build to **staging** locally (rare) | `dbt build --target staging` | `DBT_TARGET=staging dbt build` |
 | Build to **prod** locally | ⚠️ **don't** — let CI do it on merge | (CI runs `dbt build --target prod`) |
 | Your **own dev schema** (avoid colliding) | personal namespace | `DBT_DATASET=dbt_$USER dbt build` |
 | **Per-PR ephemeral schema** | CI sets it automatically | `DBT_DATASET=dbt_ci_pr_<n>` (in workflow) |
 
+> 📚 `--target` is the dbt-documented **universal** way to switch target ([dbt docs](https://docs.getdbt.com/reference/global-configs/about-global-configs)).
+> `DBT_TARGET` is **not** a dbt built-in env var — it works here because **our `profiles.yml`**
+> reads it: `target: "{{ env_var('DBT_TARGET', 'dev') }}"`. Both achieve the same thing; CI uses
+> env vars (set in workflow `env:`), interactive use can prefer `--target`.
+
 ### Switching environments locally
 For one command vs the rest of the shell:
 ```bash
+dbt build --target staging           # universal — works anywhere
+# or, because of our profiles.yml's env_var() pattern:
 DBT_TARGET=staging dbt build         # just this one command
-# or
 export DBT_TARGET=staging            # for the rest of this shell
 ```
 
