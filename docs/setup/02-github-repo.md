@@ -1,4 +1,8 @@
-# 04 — GitHub repo: create + go public + branch protection + secret-history sweep
+# 02 — GitHub repo: create + go public + branch protection + secret-history sweep
+
+> **Why this comes before GCP/Terraform:** the WIF provider built by Terraform (doc 04)
+> hard-pins your repo's numeric `repository_id` into its attribute condition. The infra
+> apply will fail if the repo doesn't exist yet — so create it first.
 
 ## What you'll have when done
 - A GitHub repo with this codebase (if not already)
@@ -69,4 +73,4 @@ gh repo view --json visibility,url -q '.url + "  (" + .visibility + ")"'
 gh secret list                # empty repo-level (secrets will be Environment-scoped)
 ```
 
-→ continue to [`05-github-environments-wif.md`](05-github-environments-wif.md).
+→ continue to [`03-gcp-projects.md`](03-gcp-projects.md).

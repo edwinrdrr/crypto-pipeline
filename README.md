@@ -56,7 +56,9 @@ The fast path in one block:
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
 gcloud auth login && gcloud auth application-default login && gh auth login
 
-BILLING_ACCOUNT_ID=YOUR-ID ./scripts/bootstrap.sh                # docs 02-03
+gh repo create crypto-pipeline --source=. --remote=origin --push # doc 02
+gh repo edit --visibility public                                 # doc 02
+BILLING_ACCOUNT_ID=YOUR-ID ./scripts/bootstrap.sh                # docs 03-04
 ./scripts/setup-github-environments.sh                           # doc 05
 cp .env.example .env && set -a && source .env && set +a          # doc 06
 
