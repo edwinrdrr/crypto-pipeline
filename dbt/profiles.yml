@@ -1,46 +1,38 @@
-# dbt connection profiles. Each target = one ENVIRONMENT.
-#   dev      -> DBT_DATASET (default crypto_analytics_dev). Per-PR CI overrides this
-#               to an ephemeral schema like dbt_ci_pr_42 for full isolation.
-#   staging  -> crypto_analytics_staging (built on merge to main, before prod)
-#   prod     -> crypto_analytics          (promoted after staging passes)
+# dbt profile — one target per environment. Each environment is its own GCP
+# PROJECT (Level-3 isolation). Datasets inside a project drop the env suffix:
+# `crypto_raw` + `crypto_analytics` — the project IS the env.
 #
-# Each env also reads a different RAW source dataset (RAW_DATASET):
-#   dev reads crypto_raw_dev; staging + prod read crypto_raw (realistic data).
-#
-# Auth is env-driven so the SAME file works locally and in CI:
-#   - Local:  DBT_METHOD defaults to 'oauth' -> uses `gcloud auth application-default login`
-#   - CI:     set DBT_METHOD=service-account + GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json
-# (keyfile is ignored when method is oauth, so the default empty path is harmless.)
+# Auth is env-driven:
+#   - Local (laptop): DBT_METHOD=oauth, GCP_PROJECT_DEV from .env → dev project.
+#   - CI: google-github-actions/auth provides ADC via Workload Identity Federation.
+#       dbt uses method=oauth (reads ADC); no key files anywhere.
 
 crypto:
   target: "{{ env_var('DBT_TARGET', 'dev') }}"
   outputs:
     dev:
       type: bigquery
-      method: "{{ env_var('DBT_METHOD', 'oauth') }}"
-      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
-      project: "{{ env_var('GCP_PROJECT') }}"
-      dataset: "{{ env_var('DBT_DATASET', 'crypto_analytics_dev') }}"
+      method:   "{{ env_var('DBT_METHOD', 'oauth') }}"
+      project:  "{{ env_var('GCP_PROJECT_DEV') }}"
+      dataset:  "{{ env_var('DBT_DATASET', 'crypto_analytics') }}"
       location: US
-      threads: 4
+      threads:  4
       priority: interactive
 
     staging:
       type: bigquery
-      method: "{{ env_var('DBT_METHOD', 'service-account') }}"
-      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
-      project: "{{ env_var('GCP_PROJECT') }}"
-      dataset: crypto_analytics_staging
+      method:   "{{ env_var('DBT_METHOD', 'oauth') }}"
+      project:  "{{ env_var('GCP_PROJECT_STAGING') }}"
+      dataset:  crypto_analytics
       location: US
-      threads: 4
+      threads:  4
       priority: interactive
 
     prod:
       type: bigquery
-      method: "{{ env_var('DBT_METHOD', 'service-account') }}"
-      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '') }}"
-      project: "{{ env_var('GCP_PROJECT') }}"
-      dataset: crypto_analytics
+      method:   "{{ env_var('DBT_METHOD', 'oauth') }}"
+      project:  "{{ env_var('GCP_PROJECT_PROD') }}"
+      dataset:  crypto_analytics
       location: US
-      threads: 4
+      threads:  4
       priority: interactive
