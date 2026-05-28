@@ -5,7 +5,10 @@ them** day to day (pick which one your code runs against, never by editing code)
 this project (`crypto-pipeline`) — every step points at the artifact that exists today.
 
 ## What you'll have when done
-- **5 BigQuery datasets** in your GCP project — one per environment (raw + analytics × dev/staging/prod).
+- **5 BigQuery datasets** in your GCP project — *per environment* (raw + analytics × dev/staging/prod).
+- **1 shared GCS bucket** — *not* per-env; isolation is at the dataset level. (See
+  "[What's per-env vs shared](#whats-per-env-vs-shared-in-this-project-the-honest-reality)"
+  for the trade-off and stricter alternatives.)
 - A `.env` that defaults your local runs to **dev**, so you can't accidentally touch prod.
 - dbt knows 3 targets (dev/staging/prod) **plus per-PR ephemeral schemas**, all selected via env vars.
 - You can switch environments by changing **one variable**, never by editing pipeline code.
@@ -45,12 +48,18 @@ resource "google_bigquery_dataset" "datasets" {
 cd terraform && terraform init && terraform apply
 ```
 
-**Option B — `bq mk` (one-off)**
+**Option B — `bq mk` (no Terraform)**
 ```bash
 for ds in crypto_raw_dev crypto_raw crypto_analytics_dev crypto_analytics_staging crypto_analytics; do
   bq --location=US mk --dataset "$GCP_PROJECT:$ds"
 done
+gcloud storage buckets create gs://$GCP_PROJECT-crypto-raw --location=US
 ```
+> **Trade-off without Terraform:** there's no single file that *defines* what exists; the
+> "source of truth" is the cloud itself (or a setup script / wiki). You lose reproducibility
+> (no `terraform apply` to rebuild in a new project) and you'll have to set lifecycle rules
+> (e.g. 30-day auto-delete) by hand. Fine for learning or a one-off; teams beyond a couple of
+> people use IaC.
 
 ### 2. Teach dbt about each environment (`profiles.yml`)
 
@@ -127,6 +136,43 @@ RAW_DATASET=crypto_raw_dev                 # dbt reads dev raw
 DBT_DATASET=crypto_analytics_dev           # dbt writes dev analytics
 DBT_PROFILES_DIR=$PWD/dbt
 ```
+
+---
+
+## What's per-env vs shared in this project (the honest reality)
+
+You noticed correctly — **not everything in this project is per-env**. The doc's "5 datasets"
+is per-env, but several other resources are **shared** across environments. Here's the truth:
+
+| Resource | This project | Stricter real-world setups |
+|---|---|---|
+| **GCP project** | **ONE project** for all envs | one project **per env** (`org-data-dev`, `org-data-prod`) — the stricter pattern Google recommends for serious isolation |
+| **BigQuery datasets** | ✅ **5 per-env** (`*_dev` / `_staging` / prod) | same — per-env is universal |
+| **GCS bucket** | **ONE shared** bucket (`<project>-crypto-raw`) — dev runs & the prod function write to it | **per-env buckets** (`crypto-raw-dev`, `crypto-raw`) for full isolation |
+| **Service accounts** (dbt-ci, function runtime, scheduler) | **per project**, used by all envs within it | same (per project) OR per-env if projects are per-env |
+| **dbt code / repo** | **one repo, one codebase** — promoted via config | same — one code, one repo per data project |
+
+### "We don't use dev on GCS, etc.?" — yes, exactly
+
+Right catch. **GCS is the asymmetry.** In this project, dev's ingestion (local runs) and prod's
+ingestion (the deployed function) both write to the **same bucket** — they just land files
+under different date-partitioned paths and load into *different datasets*. Isolation is at the
+**dataset level**, not the bucket level.
+
+This is a pragmatic choice for small/learning scale. The cost is small (the bucket auto-deletes
+files after 30 days; everything reads from BigQuery anyway). For stricter teams you'd add a
+second bucket `crypto-raw-dev` and route dev ingestion there.
+
+### Three levels of env isolation in GCP (where this project sits)
+
+1. **One project, datasets per env** ← *this project* — simplest, fine for ≤ team-size workloads.
+2. **One project, datasets + buckets per env** — better data-plane isolation.
+3. **One project per env** (`...-dev`, `...-prod`) — Google's recommended pattern for serious
+   isolation: separate IAM, separate quotas, "completely isolated" code/data ([GCP docs][gcp-iso]).
+
+Migrating between these is mostly a Terraform rewrite — promote via config, not code.
+
+[gcp-iso]: https://cloud.google.com/appengine/docs/legacy/standard/java/creating-separate-dev-environments "Google: 'it is vital that environments be completely isolated from one another, with very different operator-access permissions'"
 
 ---
 
