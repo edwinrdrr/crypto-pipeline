@@ -3,6 +3,25 @@
 Each env's `crypto_raw.prices` table must exist before dbt sources resolve. Then deploy
 the gen2 Cloud Function + Cloud Scheduler to **staging (paused)** and **prod (every 5 min)**.
 
+## Why staging's scheduler is PAUSED
+
+Staging exists to validate the **deploy path** (function builds, IAM works, scheduler
+job is created, OIDC invocation works) — not to ingest data continuously. If it ingested
+every 5 min in addition to prod, you'd:
+- 2× the CoinGecko API calls (the public free tier is generous but not infinite).
+- 2× the GCS write operations (the only line item that can leave the Always Free).
+- Get *staging* data noise that doesn't help analytics (which read from prod).
+
+The "operator workflow" (resume → run → pause) lets you validate staging when you want
+to (e.g. after changing `main.py`), without continuous load.
+
+## GCS bucket lifecycle
+
+Each env's raw bucket has a **30-day delete** lifecycle rule (Terraform sets this in
+`modules/data-project/`). Raw JSONL files land daily under
+`raw/coingecko/dt=YYYY-MM-DD/`; after 30 days they're auto-deleted. Data in BigQuery
+persists forever (we never delete the load destination).
+
 ## What you'll have when done
 - `crypto_raw.prices` table populated in **all three** env projects (~4 rows each)
 - `crypto-ingest` Cloud Function deployed in staging + prod (running as

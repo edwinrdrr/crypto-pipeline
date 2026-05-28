@@ -2,6 +2,18 @@
 
 Create the 4 GCP projects and prep the cloud side.
 
+## Why 4 projects (not 3)
+- 3 env projects (`dev`, `staging`, `prod`) — one per environment, real-world Level-3
+  isolation.
+- 1 **shared infra project** for cross-cutting state:
+  - **tfstate bucket** (single canonical home for all envs' Terraform state)
+  - **ci-state bucket** (Slim CI manifest shared by all CI runs)
+  - **WIF pool + provider** (Google best practice: single pool, not duplicated)
+  - **`tf-runner` SA** (read-only across env projects, for `terraform plan` on PR)
+
+Putting these in a fourth project keeps prod free of "infrastructure plumbing" and lets
+you grant `tf-runner` `roles/viewer` per env project without polluting any env's IAM.
+
 ## What you'll have when done
 - 4 GCP projects, all billing-linked:
   - `crypto-pipeline-infra-260528` — shared infra (tfstate, ci-state, WIF)

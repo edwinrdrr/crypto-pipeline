@@ -14,6 +14,10 @@ Configure the laptop side so `dbt build` works against the dev project.
 - `dbt/macros/generate_schema_name.sql` — dbt-recommended pattern using
   `target.name == 'prod'` (NOT the anti-pattern that uses `custom_schema_name` directly).
 - `.env.example` (committed) — template for the gitignored `.env`.
+- **`DBT_PROFILES_DIR`** tells dbt where to find `profiles.yml`. Our `.env` sets it to
+  `$PWD/dbt` so it resolves to the repo's `dbt/` folder when sourced from repo root.
+  (Default dbt behavior is `~/.dbt/profiles.yml`, which we don't want — profile lives in
+  the repo.)
 
 ## Fast path
 ```bash
@@ -69,6 +73,15 @@ The source `crypto_raw.prices` must exist in dev. **Doc 07 seeds it.** Once seed
 .venv/bin/dbt build --target dev
 # writes into <dev-project>.crypto_analytics.* + tests pass
 ```
+
+## Check source freshness (is raw data flowing?)
+The sources declare freshness; `dbt source freshness` will warn/error if `crypto_raw.prices`
+hasn't been updated recently.
+```bash
+.venv/bin/dbt source freshness --target dev      # against your local dev project
+.venv/bin/dbt source freshness --target prod     # against prod (read-only check)
+```
+A stale prod source = ingestion stopped. See `10-troubleshooting.md`.
 
 ## Switch target locally (rare)
 ```bash
