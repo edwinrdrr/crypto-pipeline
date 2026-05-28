@@ -1,4 +1,4 @@
-# 02 — GCP projects, billing, APIs, budgets, tfstate bucket
+# 03 — GCP projects, billing, APIs, budgets, tfstate bucket
 
 Create the 4 GCP projects and prep the cloud side.
 
@@ -46,7 +46,8 @@ That runs Phases 1–5 in `scripts/bootstrap.sh`:
 4. Per-project budgets.
 5. Create the tfstate bucket (versioning + lifecycle).
 
-(Phases 6–8 run Terraform — that's doc 03.)
+(Phases 6–8 run Terraform — that's doc 04. Phase 8 reads `repos/<you>/<repo>` via
+`gh api`, which is why doc 02 — creating the repo — comes before this.)
 
 Find your `BILLING_ACCOUNT_ID` via:
 ```bash
@@ -123,4 +124,4 @@ gcloud storage buckets describe gs://crypto-pipeline-infra-260528-tfstate \
   --format='value(versioning.enabled)'   # → True
 ```
 
-→ continue to [`03-terraform.md`](03-terraform.md).
+→ continue to [`04-terraform.md`](04-terraform.md).

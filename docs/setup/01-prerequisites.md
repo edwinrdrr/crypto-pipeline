@@ -83,4 +83,4 @@ ls ~/.config/gcloud/application_default_credentials.json            # ADC file e
 gh auth status                                                       # ✓ Logged in
 ```
 
-All good? → continue to [`02-gcp-projects.md`](02-gcp-projects.md).
+All good? → continue to [`02-github-repo.md`](02-github-repo.md).

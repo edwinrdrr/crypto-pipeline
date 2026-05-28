@@ -1,7 +1,7 @@
 # 05 — GitHub Environments + per-env secrets + WIF impersonation
 
 Configure the CI/CD identity story: per-Environment secrets + required-reviewer on
-production. WIF (impersonation bindings) was already set up by Terraform in doc 03.
+production. WIF (impersonation bindings) was already set up by Terraform in doc 04.
 
 ## What you'll have when done
 - 3 GitHub Environments (`dev`, `staging`, `production`)
@@ -54,7 +54,7 @@ gh secret delete GCP_SA_KEY  2>/dev/null || true
 gh secret delete GCP_PROJECT 2>/dev/null || true
 ```
 
-### WIF impersonation chain — already done in doc 03
+### WIF impersonation chain — already done in doc 04
 
 ```
 GitHub Action job  ──►  OIDC token (subject: "repo:edwinrdrr/crypto-pipeline:...")

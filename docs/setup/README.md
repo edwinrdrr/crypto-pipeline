@@ -11,9 +11,9 @@ Total time: **~30–45 min** of mostly waiting. Total cost: **~$0/year** (Always
 |---|-----|----------------|------|
 | 0 | [`environments.md`](environments.md) | **concept overview** — what gets created and why (read first) | 5 min |
 | 1 | [`01-prerequisites.md`](01-prerequisites.md) | install tools, authenticate (gcloud / gh) | 5 min |
-| 2 | [`02-gcp-projects.md`](02-gcp-projects.md) | provision the 4 GCP projects + tfstate bucket | ~5 min |
-| 3 | [`03-terraform.md`](03-terraform.md) | apply per-env Terraform (buckets, datasets, SAs, WIF) | ~5 min |
-| 4 | [`04-github-repo.md`](04-github-repo.md) | repo + branch protection + go public + secret-history sweep | 5 min |
+| 2 | [`02-github-repo.md`](02-github-repo.md) | repo + branch protection + go public + secret-history sweep | 5 min |
+| 3 | [`03-gcp-projects.md`](03-gcp-projects.md) | provision the 4 GCP projects + tfstate bucket | ~5 min |
+| 4 | [`04-terraform.md`](04-terraform.md) | apply per-env Terraform (buckets, datasets, SAs, WIF) | ~5 min |
 | 5 | [`05-github-environments-wif.md`](05-github-environments-wif.md) | GitHub Environments + per-env secrets + WIF binding | 2 min |
 | 6 | [`06-dbt-local.md`](06-dbt-local.md) | local dbt + `.env` + first build against dev | 5 min |
 | 7 | [`07-deploy-ingestion.md`](07-deploy-ingestion.md) | seed raw tables + deploy function to staging + prod | ~5 min |
@@ -24,23 +24,26 @@ Total time: **~30–45 min** of mostly waiting. Total cost: **~$0/year** (Always
 
 ## Prerequisites
 - A Google account with a billing account (free trial is fine; **5-project quota** matters
-  — see doc 02).
+  — see doc 03).
 - A GitHub account.
 - Linux/macOS (the install scripts assume this).
 
 ## The fast path (one-shot)
 
-Once tools are installed and you're authenticated, **two scripts and a deploy** get you
-all the way:
+Once tools are installed and you're authenticated:
 
 ```bash
-# 1. provision 4 projects + Terraform + WIF (idempotent; safe to re-run)
+# 1. create the GitHub repo (doc 02) — bootstrap.sh Phase 8 reads its numeric id
+gh repo create crypto-pipeline --source=. --remote=origin --push
+gh repo edit --visibility public
+
+# 2. provision 4 projects + Terraform + WIF (idempotent; safe to re-run)
 BILLING_ACCOUNT_ID=YOUR-BILLING-ACCOUNT-ID ./scripts/bootstrap.sh
 
-# 2. configure GitHub Environments + per-env secrets + required-reviewer
+# 3. configure GitHub Environments + per-env secrets + required-reviewer
 ./scripts/setup-github-environments.sh
 
-# 3. seed raw tables + deploy the Cloud Function to staging (paused) + prod (live)
+# 4. seed raw tables + deploy the Cloud Function to staging (paused) + prod (live)
 cp .env.example .env && set -a && source .env && set +a
 .venv/bin/python ingestion/main.py
 GCP_PROJECT=$GCP_PROJECT_STAGING RAW_BUCKET=$GCP_PROJECT_STAGING-crypto-raw \

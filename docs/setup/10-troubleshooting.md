@@ -8,7 +8,7 @@ If you're mid-setup and something failed, scan here first — odds are it's list
 ## Billing / quotas
 
 ### `FAILED_PRECONDITION: Cloud billing quota exceeded`
-**When:** `gcloud billing projects link` (doc 02) or `bootstrap.sh` Phase 1.
+**When:** `gcloud billing projects link` (doc 03) or `bootstrap.sh` Phase 1.
 **Why:** Your billing account's default quota is **5 linked projects** for newer/free-trial accounts.
 **Fix:** Delete unused billing-linked projects to free slots:
 ```bash
@@ -124,7 +124,7 @@ terraform apply
 GCP_PROJECT=$GCP_PROJECT_<ENV> RAW_BUCKET=$GCP_PROJECT_<ENV>-crypto-raw \
    .venv/bin/python ingestion/main.py
 ```
-Doc 07 seeds all three; this happens when CI runs before doc 07.
+Doc 07 seeds all three envs' raw tables; this happens when CI runs before doc 07.
 
 ### `dbt deps` says "Unable to resolve … dbt-utils"
 **Why:** `dbt-utils` is a **dbt package** (installed by `dbt deps` from `packages.yml`),
@@ -184,7 +184,7 @@ then `git push -u origin main`.
 ### Required reviewer rule rejected on private repo (`422` / "feature not available")
 **Why:** GitHub Free doesn't support required-reviewer protection on **private** repos
 (Pro/Team/Enterprise only).
-**Fix:** Make the repo **public** (doc 04). After the visibility flip, retry doc 05's
+**Fix:** Make the repo **public** (doc 02). After the visibility flip, retry doc 05's
 production-environment PUT call.
 
 ### My-own-approval blocked / "you cannot approve your own deployment"

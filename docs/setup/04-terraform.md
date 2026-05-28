@@ -1,4 +1,4 @@
-# 03 — Terraform: per-env data projects + shared infra
+# 04 — Terraform: per-env data projects + shared infra
 
 Apply Terraform so each env project gets its bucket + datasets + SAs, and the infra project
 gets WIF + the ci-state bucket + tf-runner SA.
@@ -42,7 +42,7 @@ Each env folder has its own `backend.tf` pointing at
 > reproducible builds. Don't gitignore it.
 
 ## Fast path
-This step is also part of `bootstrap.sh` (Phases 6–8). If you ran the fast path in doc 02,
+This step is also part of `bootstrap.sh` (Phases 6–8). If you ran the fast path in doc 03,
 Terraform has already been applied. To re-apply or to apply manually:
 
 ```bash
@@ -115,4 +115,4 @@ gcloud iam service-accounts list --project=crypto-pipeline-infra-260528 \
   | grep tf-runner
 ```
 
-→ continue to [`04-github-repo.md`](04-github-repo.md).
+→ continue to [`05-github-environments-wif.md`](05-github-environments-wif.md).
