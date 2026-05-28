@@ -408,6 +408,7 @@ crypto-pipeline/
     bootstrap.sh         #   one command: provision + deploy + verify (idempotent)
     teardown.sh          #   delete the project to rebuild clean
   docs/
+    data-warehouse-setup.md    # lead's new-project runbook (10 phases, scope tags, shared-vs-per-project)
     start-here-mental-model.md # read first: environments=cloud DBs, what push/CI-CD really do
     walkthrough-one-change.md  # real recorded run: one change traced dev→staging→prod
     environments-and-cicd.md   # concept guide: why environments/CI-CD/cloud work this way
@@ -419,6 +420,10 @@ crypto-pipeline/
 
 ## Companion docs
 
+- **`docs/data-warehouse-setup.md`** — the **lead's new-project runbook**: 10 phases (org → project
+  → environments → repo → SAs/secrets → dbt → CI/CD → orchestration → observability → docs),
+  each tagged by scope (org-once / project-once / per-env / per-dev). Answers "do I create
+  the CI service account once for the company or per project?" (per project).
 - **`docs/start-here-mental-model.md`** — read this FIRST. Untangles the core confusion from
   zero: environments are *cloud databases*, "local" is just your laptop, and what `git push` /
   CI/CD actually do (branch→dev, merge→staging→prod). Grounded in a real trace from this repo.
