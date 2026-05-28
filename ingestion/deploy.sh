@@ -14,7 +14,7 @@ set -euo pipefail
 export PATH="$HOME/google-cloud-sdk/bin:$PATH"
 
 : "${ENV:?set ENV=staging or ENV=prod}"
-: "${PROJECT_ID:?set PROJECT_ID to the env's GCP project id}"
+: "${PROJECT_ID:?set PROJECT_ID to the GCP project id for this env}"
 case "$ENV" in
   staging|prod) ;;
   *) echo "ENV must be staging or prod (got: $ENV)"; exit 1 ;;
@@ -42,7 +42,7 @@ fi
 RUNTIME_SA="crypto-ingest-fn@${PROJECT_ID}.iam.gserviceaccount.com"
 SCHEDULER_SA="crypto-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
 
-echo "==> Deploying function '$FUNCTION_NAME' to project $PROJECT_ID ..."
+echo "==> Deploying function $FUNCTION_NAME to project $PROJECT_ID ..."
 gcloud functions deploy "$FUNCTION_NAME" \
   --gen2 \
   --runtime=python311 \
@@ -68,7 +68,7 @@ gcloud run services add-iam-policy-binding "$FUNCTION_NAME" \
   --member="serviceAccount:$SCHEDULER_SA" \
   --role="roles/run.invoker" >/dev/null
 
-echo "==> Creating/updating scheduler '$SCHEDULER_JOB' (schedule: $SCHEDULE) ..."
+echo "==> Creating/updating scheduler $SCHEDULER_JOB (schedule: $SCHEDULE) ..."
 if gcloud scheduler jobs describe "$SCHEDULER_JOB" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   ACTION=update
 else
@@ -84,7 +84,7 @@ gcloud scheduler jobs "$ACTION" http "$SCHEDULER_JOB" \
   --project="$PROJECT_ID"
 
 if [ "$PAUSE_AFTER_CREATE" = "true" ] && [ "$ACTION" = "create" ]; then
-  echo "==> Pausing scheduler ('$ENV' is operator-triggered) ..."
+  echo "==> Pausing scheduler (staging is operator-triggered) ..."
   gcloud scheduler jobs pause "$SCHEDULER_JOB" --location="$REGION" --project="$PROJECT_ID" >/dev/null
 fi
 
