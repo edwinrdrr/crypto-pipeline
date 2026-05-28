@@ -44,36 +44,32 @@ Terraform     ────► terraform.tfvars (per env folder)  ────►
 `.env` (laptop, gitignored) is the **only** place secrets-adjacent local config lives. CI and
 the deployed function inject their config differently — see `docs/setup/environments.md`.
 
-## Reproduce from scratch (real cost: ~$0/year)
+## Reproduce from scratch
 
-You need: `gcloud`, `terraform`, `dbt-bigquery` (in `.venv`), `gh`, a billing account.
-With **5 billing-link slots** free on your GCP billing account, plus interactive auth done:
+**Every step is in [`docs/setup/`](docs/setup/README.md).** Read that folder's index for
+the order; each numbered doc has a fast path (one script) AND a manual path (so you can
+understand what the scripts do).
 
+The fast path in one block:
 ```bash
-# 0. install pinned tools (~10 min, idempotent)
 ./scripts/install-tools.sh
 export PATH="$HOME/google-cloud-sdk/bin:$HOME/bin:$PATH"
-
-# 1. authenticate (browser)
 gcloud auth login && gcloud auth application-default login && gh auth login
 
-# 2. provision 4 projects + tfstate + WIF + everything (~10 min)
-BILLING_ACCOUNT_ID=XXXXXX-XXXXXX-XXXXXX ./scripts/bootstrap.sh
+BILLING_ACCOUNT_ID=YOUR-ID ./scripts/bootstrap.sh                # docs 02-03
+./scripts/setup-github-environments.sh                           # doc 05
+cp .env.example .env && set -a && source .env && set +a          # doc 06
 
-# 3. seed raw tables (one row each, so dbt source() resolves)
-cp .env.example .env && set -a && source .env && set +a
-.venv/bin/python ingestion/main.py                                # dev project
+# doc 07 (seed + deploy)
+.venv/bin/python ingestion/main.py
 GCP_PROJECT=$GCP_PROJECT_STAGING RAW_BUCKET=$GCP_PROJECT_STAGING-crypto-raw \
-   .venv/bin/python ingestion/main.py                              # staging
+   .venv/bin/python ingestion/main.py
 GCP_PROJECT=$GCP_PROJECT_PROD    RAW_BUCKET=$GCP_PROJECT_PROD-crypto-raw \
-   .venv/bin/python ingestion/main.py                              # prod
-
-# 4. configure GitHub Environments + per-env secrets + required-reviewer
-#    (see scripts/setup-github-environments.sh — TODO: extract this from bootstrap notes)
-
-# 5. deploy the function (env-aware: staging PAUSED, prod every 5 min)
+   .venv/bin/python ingestion/main.py
 ENV=staging PROJECT_ID=$GCP_PROJECT_STAGING ./ingestion/deploy.sh
 ENV=prod    PROJECT_ID=$GCP_PROJECT_PROD    ./ingestion/deploy.sh
+
+# verify per doc 08
 ```
 
 > **Cost guardrail**: every project has a budget alert at ~$5 in your account's native
