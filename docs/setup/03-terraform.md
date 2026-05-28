@@ -32,6 +32,15 @@ terraform/
 Each env folder has its own `backend.tf` pointing at
 `gs://crypto-pipeline-infra-260528-tfstate/envs/<env>/`.
 
+> **Why remote state in the *infra* bucket** (vs one tfstate bucket per env project)?
+> One canonical location is simpler to back up, audit, and IAM-restrict. Per-env *prefixes*
+> in one bucket give the same isolation as separate buckets, with fewer moving parts.
+> Object versioning is enabled (30 versions retained) so accidental destruction is
+> recoverable.
+
+> **`.terraform.lock.hcl` per env IS committed** — it pins provider versions for
+> reproducible builds. Don't gitignore it.
+
 ## Fast path
 This step is also part of `bootstrap.sh` (Phases 6–8). If you ran the fast path in doc 02,
 Terraform has already been applied. To re-apply or to apply manually:

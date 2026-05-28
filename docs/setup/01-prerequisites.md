@@ -2,6 +2,18 @@
 
 Install the exact tool versions this project uses, then authenticate to GCP + GitHub.
 
+## OS-level prerequisites (assumed already present)
+- **Linux or macOS** with `bash`, `git`, `python3` (≥3.10), `curl`, `unzip` available on `PATH`.
+- A shell where you can `export PATH=...` and `set -a && source .env && set +a`.
+
+Quick check:
+```bash
+bash --version | head -1     # GNU bash 4+
+git --version                # 2.x
+python3 --version            # 3.10+
+which curl unzip             # both found
+```
+
 ## What you'll have when done
 - `gcloud` (Google Cloud SDK) in `~/google-cloud-sdk/bin/`
 - `terraform` v1.9.8 in `~/bin/`

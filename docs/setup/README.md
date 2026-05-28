@@ -9,7 +9,7 @@ Total time: **~30–45 min** of mostly waiting. Total cost: **~$0/year** (Always
 
 | # | Doc | What it covers | Time |
 |---|-----|----------------|------|
-| 0 | [`environments.md`](environments.md) | concept overview — what gets created and why | 5 min |
+| 0 | [`environments.md`](environments.md) | **concept overview** — what gets created and why (read first) | 5 min |
 | 1 | [`01-prerequisites.md`](01-prerequisites.md) | install tools, authenticate (gcloud / gh) | 5 min |
 | 2 | [`02-gcp-projects.md`](02-gcp-projects.md) | provision the 4 GCP projects + tfstate bucket | ~5 min |
 | 3 | [`03-terraform.md`](03-terraform.md) | apply per-env Terraform (buckets, datasets, SAs, WIF) | ~5 min |
@@ -17,7 +17,10 @@ Total time: **~30–45 min** of mostly waiting. Total cost: **~$0/year** (Always
 | 5 | [`05-github-environments-wif.md`](05-github-environments-wif.md) | GitHub Environments + per-env secrets + WIF binding | 2 min |
 | 6 | [`06-dbt-local.md`](06-dbt-local.md) | local dbt + `.env` + first build against dev | 5 min |
 | 7 | [`07-deploy-ingestion.md`](07-deploy-ingestion.md) | seed raw tables + deploy function to staging + prod | ~5 min |
-| 8 | [`08-verify.md`](08-verify.md) | end-to-end verification | 5 min |
+| 8 | [`08-verify.md`](08-verify.md) | end-to-end verification (test PR, WIF, prod gate, manifest) | 5 min |
+| 9 | [`09-scheduled-dbt.md`](09-scheduled-dbt.md) | enable / dispatch the every-6h prod-refresh cron | 2 min |
+| — | [`10-troubleshooting.md`](10-troubleshooting.md) | **reference** — common setup errors + exact fixes | as needed |
+| — | [`fork-and-customize.md`](fork-and-customize.md) | **reference** — find-and-replace if you fork this repo | 5 min |
 
 ## Prerequisites
 - A Google account with a billing account (free trial is fine; **5-project quota** matters

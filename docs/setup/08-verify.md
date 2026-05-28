@@ -77,6 +77,31 @@ bq query --use_legacy_sql=false --project_id=$GCP_PROJECT_PROD --format=pretty \
   - Revert it: open another PR with `git revert <merge_sha>`, or
   - Leave it — it's a SQL comment, harmless.
 
+## 8. Verify the security boundary (WIF restricted to this repo)
+
+The WIF provider's attribute condition only accepts OIDC tokens whose `repository_id`
+matches *this* repo's numeric id. Confirm:
+```bash
+gcloud iam workload-identity-pools providers describe github \
+  --project=crypto-pipeline-infra-260528 --location=global \
+  --workload-identity-pool=github-actions \
+  --format='value(attributeCondition)'
+# expected: assertion.repository_id == "1251445803"
+```
+That id should match `gh api repos/edwinrdrr/crypto-pipeline --jq .id`. If it differs (e.g.
+after a fork), update `terraform/envs/infra/terraform.tfvars` and re-apply infra. See
+[`fork-and-customize.md`](fork-and-customize.md).
+
+## 9. Verify Slim CI is actually slim
+
+In the run from step 2, the Slim CI build should select only the changed model (not
+rebuild everything):
+```bash
+gh run view $RUN --log 2>&1 | grep -E "of [0-9]+ START|state:modified" | head -5
+# Expect to see "1 of 5 START" or similar — meaning only 1 model selected to build,
+# plus its 4 tests. NOT "1 of 12 START" (which would mean Slim CI didn't apply).
+```
+
 ## All green?
 Your repo and cloud state now match the live architecture. See:
 - `../../README.md` — the live architecture & status

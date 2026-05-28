@@ -54,13 +54,35 @@ gh secret delete GCP_SA_KEY  2>/dev/null || true
 gh secret delete GCP_PROJECT 2>/dev/null || true
 ```
 
-### WIF impersonation — already done in doc 03
-Terraform's `envs/infra/main.tf` (via `modules/wif/`) creates:
-- WIF pool `github-actions` + provider `github` with attribute condition
-  `assertion.repository_id == "1251445803"`
-- `google_service_account_iam_member` binding per env: each `dbt-ci@<env-project>` SA gets
-  `roles/iam.workloadIdentityUser` for the principalSet
-  `principalSet://iam.googleapis.com/.../attribute.repository/edwinrdrr/crypto-pipeline`
+### WIF impersonation chain — already done in doc 03
+
+```
+GitHub Action job  ──►  OIDC token (subject: "repo:edwinrdrr/crypto-pipeline:...")
+                        ▲
+                        │ workflow declares  permissions: { id-token: write }
+                        │
+                        ▼
+google-github-actions/auth@v2
+                        │  workload_identity_provider = projects/.../providers/github
+                        │  service_account            = dbt-ci@<env-project>
+                        ▼
+WIF provider (in infra)
+                        │  attribute_condition: repository_id == "1251445803"  ← only THIS repo
+                        │  attribute_mapping:   subject, repository, ref, environment, ...
+                        ▼
+Workload Identity Pool
+                        │  principalSet://.../attribute.repository/edwinrdrr/crypto-pipeline
+                        ▼
+dbt-ci@<env-project> SA's IAM binding
+                        │  roles/iam.workloadIdentityUser → that principalSet
+                        ▼
+GCP short-lived ADC (≤1 hour) → workflow can act as dbt-ci@<env-project>
+```
+
+Terraform's `envs/infra/main.tf` (via `modules/wif/`) creates the pool, the provider, AND
+the `google_service_account_iam_member` binding for each env SA. The attribute condition
+on `repository_id` (immutable, survives repo rename) is the security boundary —
+**no other repo can impersonate these SAs**.
 
 This is what lets the workflow `service_account:` field assume each env's SA without keys.
 
