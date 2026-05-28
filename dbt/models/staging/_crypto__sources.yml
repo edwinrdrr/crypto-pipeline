@@ -2,10 +2,10 @@ version: 2
 
 sources:
   - name: crypto_raw
-    # The raw dataset the ingestion job loads into. Differs per environment:
-    #   dev  -> crypto_raw_dev   prod -> crypto_raw
-    database: "{{ env_var('GCP_PROJECT') }}"
-    schema: "{{ env_var('RAW_DATASET', 'crypto_raw_dev') }}"
+    # Level-3 isolation: the project IS the env, so dataset name is the same
+    # everywhere (`crypto_raw`). The PROJECT differs per target via target.project.
+    database: "{{ target.project }}"
+    schema: crypto_raw
     tables:
       - name: prices
         description: "Raw CoinGecko price snapshots, one row per coin per 5-min poll."

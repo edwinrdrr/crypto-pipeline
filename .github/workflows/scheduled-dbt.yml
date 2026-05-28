@@ -1,42 +1,47 @@
 name: scheduled dbt (prod refresh)
 
-# Free, 24/7 orchestration of the dbt TRANSFORM on a schedule — the gap that
-# Cloud Scheduler (ingestion only) and local Airflow (dev-only) don't cover.
+# Free 24/7 prod transform via GitHub Actions cron — the gap that the every-5-min
+# Cloud Scheduler (ingestion only) doesn't cover.
 #
-# Cost note (private repo = 2,000 free Action-minutes/month):
-#   every 6h = ~120 runs/mo x ~2 min = ~240 min/mo — comfortably free.
-#   Do NOT make this hourly on a private repo (~1,800 min/mo nearly blows the budget).
+# Keyless auth via Workload Identity Federation (no SA keys).
 #
-# Notes: scheduled workflows run only on the default branch, can be delayed under load,
-# and GitHub auto-disables them after 60 days of repo inactivity.
+# Public repo: unlimited Action minutes (no 2,000/mo cap). Schedule kept modest
+# anyway — every 6h is plenty for crypto analytics.
 
 on:
   schedule:
-    - cron: "0 */6 * * *"      # every 6 hours
-  workflow_dispatch: {}         # also allow manual "Run workflow"
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
 
 env:
-  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  WIF_PROVIDER: projects/101866768306/locations/global/workloadIdentityPools/github-actions/providers/github
   DBT_PROFILES_DIR: ${{ github.workspace }}/dbt
-  GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/sa-key.json
-  DBT_METHOD: service-account
+  DBT_METHOD: oauth
   DBT_TARGET: prod
-  RAW_DATASET: crypto_raw
 
 jobs:
   refresh-prod:
     runs-on: ubuntu-latest
+    environment: production           # same gate as the prod job in dbt-ci.yml
     defaults:
       run:
         working-directory: dbt
+    env:
+      GCP_PROJECT_PROD: ${{ secrets.GCP_PROJECT_PROD }}
     steps:
       - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: dbt-ci@${{ secrets.GCP_PROJECT_PROD }}.iam.gserviceaccount.com
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: pip install dbt-bigquery==1.*
-      - name: Write service account key
-        run: echo '${{ secrets.GCP_SA_KEY }}' > "$GOOGLE_APPLICATION_CREDENTIALS"
       - run: dbt deps
-      - name: dbt build (prod) — keeps crypto_analytics fresh on a schedule
+      - name: dbt build (prod refresh)
         run: dbt build --target prod
