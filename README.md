@@ -1,5 +1,27 @@
 # Crypto Data Pipeline (Level-3 multi-project, learning project)
 
+> ## 📦 Archived (cloud torn down 2026-05-28)
+>
+> The 4 GCP projects backing this repo (`crypto-pipeline-{infra,dev,stg,prod}-260528`)
+> were deleted on **2026-05-28** to free billing-account project-quota slots for
+> the [`spotify-pipeline`](https://github.com/edwinrdrr/spotify-pipeline) journey-repo.
+>
+> **What still works**: the repo, its commits, PRs (#26–#34), tags, docs, and
+> Terraform/dbt/scripts code — all preserved as the architectural reference they were
+> always intended to be. Anyone can clone, follow `docs/setup/`, and reproduce the
+> Level-3 architecture from scratch under their own billing account.
+>
+> **What no longer works** (in *this* GCP, not yours):
+> - GitHub Actions runs (would 401 — WIF provider is gone)
+> - The `production` Environment's required-reviewer gate (no remote SA to impersonate)
+> - The scheduled prod ingest cron (project deleted)
+>
+> The GitHub Environments, secrets, and required-reviewer rules on this repo are left
+> as-is — they're harmless on an archived repo. If you fork to re-host the live cloud,
+> follow [`docs/setup/fork-and-customize.md`](docs/setup/fork-and-customize.md).
+
+---
+
 A free-tier data engineering pipeline on Google Cloud built to learn **real-world
 environments, CI/CD, and cloud** end-to-end. **Architecturally complete** — uses the
 real-world project-per-environment isolation pattern, Workload Identity Federation
