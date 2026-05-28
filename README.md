@@ -144,10 +144,8 @@ crypto-pipeline/
 | **`docs/alerts.md`** | free monitoring + notifications when the pipeline breaks |
 | **`docs/data-warehouse-setup.md`** | lead's phased new-project runbook |
 
-> ⚠️ Some of the deeper docs were written against the earlier Level-1 single-project setup
-> and reference the old project id `crypto-pipeline-260527-18241` (deleted in PR F) and
-> dataset names like `crypto_analytics_dev`. The **architectural patterns** still apply, but
-> for the concrete current state always read **this README** + **`docs/setup/environments.md`**.
+All docs above are **synced to the Level-3 architecture** (4 GCP projects, WIF, GitHub
+Environments). Conceptual patterns and concrete commands match what's currently live.
 
 ## What's running right now
 
@@ -167,4 +165,4 @@ crypto-pipeline/
 | Slim CI working (Level-3) | verified by PR #28 merge run ✅ |
 | Old project torn down | deleted (DELETE_REQUESTED, ~30-day recoverable) ✅ |
 | Terraform CI (plan-on-PR) | wired in PR G ✅ |
-| Docs fully synced to Level 3 | README + LEARNING + setup/environments updated; deeper docs scheduled for cleanup |
+| Docs fully synced to Level 3 | ✅ all docs (CLAUDE + 8 under docs/) rewritten for the current architecture |
