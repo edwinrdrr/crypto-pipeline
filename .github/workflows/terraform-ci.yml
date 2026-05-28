@@ -77,9 +77,16 @@ jobs:
         id: tfplan
         working-directory: terraform/envs/${{ matrix.env }}
         run: |
-          terraform init -input=false -no-color
-          terraform plan -input=false -no-color -out=plan.tfplan \
-            -var-file=terraform.tfvars 2>&1 | tee plan.txt
+          set -e
+          terraform init -input=false -no-color -lockfile=readonly
+          # plan-only CI: -lock=false skips state-lock acquisition (tf-runner
+          # has read-only access; locking would require write on the bucket).
+          set +e
+          terraform plan -input=false -no-color -lock=false -out=plan.tfplan \
+            -var-file=terraform.tfvars > plan.txt 2>&1
+          plan_exit=$?
+          cat plan.txt
+          exit $plan_exit
 
       - name: post plan as PR comment
         if: always()
